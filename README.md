@@ -2,7 +2,7 @@
 
 Pi dumps every installed skill into the system prompt. With hundreds of skills that burns context and makes near-duplicates hard to tell apart.
 
-This extension strips `<available_skills>`, then asks [TypeSafe Jev](https://typesafe.ai) which skill — if any — to load.
+This extension **strips** `<available_skills>`, then asks [TypeSafe Jev](https://typesafe.ai) which skill — if any — to load. At most one skill per turn, or quiet.
 
 ## Install
 
@@ -16,19 +16,48 @@ Or try without installing:
 pi -e ./index.ts
 ```
 
-## API key
+## Setup
 
-Set before starting Pi (shell profile, direnv, or the process env):
+1. Get a TypeSafe key: https://console.typesafe.ai/settings/keys
+2. Export it **before** starting Pi (shell profile, direnv, or process env):
 
 ```bash
-export TYPESAFE_API_KEY=ts_...   # https://console.typesafe.ai/settings/keys
+export TYPESAFE_API_KEY=ts_...
 ```
 
-No key → extension no-ops. Pi keeps its normal skill listing.
+3. Start Pi as usual. First session with a key set asks you to pick a mode (`tool` or `auto`).
 
-## Try this
+**No key → extension no-ops.** Pi keeps its normal skill listing; nothing is stripped.
 
-With the key exported, start Pi, pick a mode on first session (`tool` or `auto`), then ask something skill-shaped:
+## How to use
+
+### `tool` mode (default)
+
+You chat normally. The agent no longer sees the skill roster in the system prompt. When a task looks skill-shaped, it should call:
+
+```text
+skill_suggest({ task: "<what the user asked>" })
+```
+
+| Result | What the agent should do |
+| --- | --- |
+| `{ "skill": "foo", "location": ".../SKILL.md", ... }` | `read` that file and follow it |
+| `{ "skill": null, "reason": "..." }` | continue without a skill |
+
+You do not call the tool yourself. Switch mode anytime with `/jev-skill-mode`.
+
+### `auto` mode
+
+You chat normally. After each user prompt, the extension runs Jev itself:
+
+- **Fit found** → a visible message is injected, e.g.  
+  `Skill recommendation for this turn: skill / location / reason`  
+  The agent is told to read that file.
+- **No fit / gate says quiet / API error** → nothing injected; the turn continues.
+
+In `auto`, `skill_suggest` is deactivated so the model does not double-route.
+
+### What to try
 
 ```text
 create a short pitch deck as pptx
@@ -42,48 +71,69 @@ review this diff against the repo standards
 what is 2+2?
 ```
 
-In `tool` mode the model should call `skill_suggest`. In `auto` mode a recommendation may appear after your prompt. Quiet turns should stay quiet.
+Skill-shaped asks should route to a skill (or recommend one in `auto`). Quiet asks like `2+2` should stay quiet.
 
-## Modes
+## How it works
 
-Both modes strip the skill listing first.
+### In the Pi session
 
-| Mode | Trigger |
-| --- | --- |
-| `tool` | Model calls `skill_suggest` when needed |
-| `auto` | Extension suggests after each user prompt; quiet if nothing fits |
+```text
+user user prompt
+           │
+           ▼
+   strip <available_skills>
+   inject short mode guidance
+           │
+     ┌─────┴─────┐
+     │           │
+  tool mode   auto mode
+     │           │
+     ▼           ▼
+ agent may    extension calls
+ call         suggest() now
+ skill_suggest
+     │           │
+     └─────┬─────┘
+           ▼
+      suggest()
+           │
+     ┌─────┴──────┐
+     │            │
+  one skill     none
+  (+ path)    (quiet / null)
+```
 
-Switch later with `/jev-skill-mode`.
+Roster = installed skills that are not `disableModelInvocation`. Built each turn from Pi's skill list.
 
-### Config priority
+### Inside `suggest()`
 
-1. `JEV_SKILL_MODE=tool\|auto`
+Same two-stage idea as the [skill suggestion cookbook](https://docs.typesafe.ai/cookbooks/skill_suggestion.md):
+
+1. **Gate** — three Noul questions (act on user's system? needs a documented procedure? would prose alone suffice?). Mean oriented score; below **0.30** → no skill.
+2. **Wide rank** — roster chunked (≤254 skills + `none_of_these` per call). Up to **3** concurrent `systemOne` Choice calls.
+3. **Shortlist** — merge chunk rankings by score; always keep the best chunk; drop other chunks whose `none_of_these` ≥ **0.50**; keep top `shortlistSize` (default **3**).
+4. **Narrow** — read ~**700** chars of each shortlisted `SKILL.md`, Choice + per-candidate fits Noul. Winner must beat fits **0.40**; else none.
+
+Timeout / API error → **fail open** (no skill; turn continues).
+
+### Config
+
+Priority:
+
+1. `JEV_SKILL_MODE=tool|auto` — overrides **mode only**
 2. `.pi/jev-skill-suggestion.json`
 3. `~/.pi/agent/jev-skill-suggestion.json`
-4. first-session picker (writes global)
+4. first-session picker → writes global
 
 ```json
 { "mode": "tool", "shortlistSize": 3 }
 ```
 
-`shortlistSize` is how many stage-1 candidates enter stage-2 rerank (default `3`, clamped `1..32`). `/jev-skill-mode` writes the global file and keeps the current `shortlistSize`. Env still overrides **mode** next session.
-
-In `auto` mode, `skill_suggest` is deactivated so the model does not double-route.
-
-## How it works
-
-Same two-stage protocol as the [skill suggestion cookbook](https://docs.typesafe.ai/cookbooks/skill_suggestion.md):
-
-1. **Gate** — should this turn use a skill? (threshold `0.30`)
-2. **Wide** — chunked choice over the roster (`none_of_these`, ≤3 concurrent `systemOne` calls)
-3. **Shortlist** — merge chunks by score (drop high-`none` non-best chunks), keep top `shortlistSize`
-4. **Narrow** — ~700 chars of each shortlisted `SKILL.md`; pick at most one (fits `0.40`)
-
-A 1000-skill roster is scanned in stage 1; only the shortlist is re-ranked. Timeout / API error → fail open (no skill, turn continues).
+`shortlistSize` = how many stage-1 candidates enter stage-2 (clamped `1..32`). `/jev-skill-mode` updates global `mode` and keeps the current `shortlistSize`.
 
 ## Privacy
 
-**Sent:** current task / user prompt; skill names + descriptions; short `SKILL.md` excerpt for shortlisted candidates.
+**Sent to TypeSafe:** current task / user prompt; skill names + descriptions; short `SKILL.md` excerpt for shortlisted candidates.
 
 **Not sent:** chat history, workspace files, credentials, tool results, system prompt.
 
@@ -95,9 +145,9 @@ bun run check   # tsc + strip/config + router asserts
 ```
 
 ```text
-index.ts               extension entry
+index.ts               extension entry (strip, modes, tool)
 src/config.ts          mode + shortlistSize
-src/strip.ts           listing strip + guidance
+src/strip.ts           listing strip + guidance + auto message
 src/router.ts          two-stage Jev suggest()
 scripts/check-strip.ts
 scripts/check-router.ts
