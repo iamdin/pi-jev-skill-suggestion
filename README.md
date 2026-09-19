@@ -58,6 +58,8 @@ You chat normally. After each user prompt, the extension runs Jev itself:
   The agent is told to read that file.
 - **No fit / gate says quiet / API error** → nothing injected; the turn continues.
 
+> **Cost / latency:** every user prompt triggers at least one Jev call before the agent starts — including quiet turns like `what is 2+2?`. Prefer `tool` if you only want routing when the model decides a skill might help.
+
 In `auto`, `skill_suggest` is deactivated so the model does not double-route.
 
 ### What to try
