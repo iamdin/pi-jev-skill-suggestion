@@ -1,0 +1,8 @@
+node_modules/
+agent-tools/
+dist/
+*.log
+.DS_Store
+.env
+.env.*
+!/.env.example
