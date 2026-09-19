@@ -12,6 +12,7 @@ import type { ExtensionAPI, Skill } from "@earendil-works/pi-coding-agent";
 import { TypeSafeClient } from "@typesafe-ai/sdk";
 import { Type } from "typebox";
 import {
+  DEFAULT_SHORTLIST_SIZE,
   globalConfigPath,
   isSuggestMode,
   loadConfig,
@@ -19,7 +20,7 @@ import {
   saveConfig,
   type SuggestMode,
 } from "./src/config.ts";
-import { suggest, type RosterSkill } from "./src/router.ts";
+import { none, suggest, type RosterSkill } from "./src/router.ts";
 import { formatAutoSuggestion, skillGuidance, stripAvailableSkills } from "./src/strip.ts";
 
 const MODE_OPTIONS = [
@@ -68,18 +69,24 @@ export default function (pi: ExtensionAPI) {
 
   const client = new TypeSafeClient({ apiKey });
   let roster: RosterSkill[] = [];
-  let mode: SuggestMode | null = null;
+  let mode: SuggestMode = "tool";
+  let shortlistSize = DEFAULT_SHORTLIST_SIZE;
 
-  function applyModeTools(next: SuggestMode | null) {
+  function applyModeTools(next: SuggestMode) {
     mode = next;
     const tools = pi.getActiveTools().filter((name) => name !== "skill_suggest");
     if (next !== "auto") tools.push("skill_suggest");
     pi.setActiveTools(tools);
   }
 
+  function persist(next: SuggestMode) {
+    saveConfig({ mode: next, shortlistSize });
+  }
+
   pi.on("session_start", async (_event, ctx) => {
     const loaded = loadConfig(ctx.cwd);
     if (loaded) {
+      shortlistSize = loaded.config.shortlistSize;
       applyModeTools(loaded.config.mode);
       const where = loaded.source === "env" ? "JEV_SKILL_MODE" : loaded.source;
       ctx.ui.notify(`jev skill suggestion: ${loaded.config.mode} mode (${where})`, "info");
@@ -92,7 +99,7 @@ export default function (pi: ExtensionAPI) {
       return;
     }
     applyModeTools(picked);
-    saveConfig({ mode: picked });
+    persist(picked);
     ctx.ui.notify(`jev skill suggestion: saved ${picked} → ${globalConfigPath()}`, "info");
   });
 
@@ -105,7 +112,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       applyModeTools(picked);
-      saveConfig({ mode: picked });
+      persist(picked);
       const envMode = modeFromEnv();
       if (envMode) {
         ctx.ui.notify(
@@ -121,15 +128,14 @@ export default function (pi: ExtensionAPI) {
   pi.on("before_agent_start", async (event) => {
     roster = toRoster(event.systemPromptOptions.skills);
     const stripped = stripAvailableSkills(event.systemPrompt);
-    const activeMode: SuggestMode = mode ?? "tool";
-    const systemPrompt = `${stripped}\n\n${skillGuidance(activeMode)}`;
+    const systemPrompt = `${stripped}\n\n${skillGuidance(mode)}`;
 
-    if (activeMode !== "auto") {
+    if (mode !== "auto") {
       return { systemPrompt };
     }
 
     try {
-      const result = await suggest(client, event.prompt, roster);
+      const result = await suggest(client, event.prompt, roster, { shortlistSize });
       const content = formatAutoSuggestion(result);
       if (!content) return { systemPrompt };
       return {
@@ -162,7 +168,7 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params, signal) {
       try {
-        const result = await suggest(client, params.task, roster, signal);
+        const result = await suggest(client, params.task, roster, { signal, shortlistSize });
         return {
           content: [{ type: "text", text: formatToolResult(result) }],
           details: { ok: true, ...result },
@@ -170,19 +176,7 @@ export default function (pi: ExtensionAPI) {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return {
-          content: [
-            {
-              type: "text",
-              text: formatToolResult({
-                skill: null,
-                location: null,
-                reason: `routing failed open: ${message}`,
-                gate: 0,
-                shortlist: [],
-                fits: {},
-              }),
-            },
-          ],
+          content: [{ type: "text", text: formatToolResult(none(`routing failed open: ${message}`)) }],
           details: { ok: false, reason: message },
         };
       }

@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, modeFromEnv } from "../src/config.ts";
+import {
+  clampShortlistSize,
+  DEFAULT_SHORTLIST_SIZE,
+  loadConfig,
+  modeFromEnv,
+} from "../src/config.ts";
 import { formatAutoSuggestion, skillGuidance, stripAvailableSkills } from "../src/strip.ts";
 
 const sample = `You are an expert coding assistant.
@@ -58,18 +63,25 @@ try {
   mkdirSync(join(projectRoot, ".pi"), { recursive: true });
   writeFileSync(
     join(projectRoot, ".pi", "jev-skill-suggestion.json"),
-    `${JSON.stringify({ mode: "tool" }, null, 2)}\n`,
+    `${JSON.stringify({ mode: "tool", shortlistSize: 9 }, null, 2)}\n`,
   );
 
   delete process.env.JEV_SKILL_MODE;
   const fromProject = loadConfig(projectRoot);
   assert.equal(fromProject?.source, "project");
   assert.equal(fromProject?.config.mode, "tool");
+  assert.equal(fromProject?.config.shortlistSize, 9);
 
   process.env.JEV_SKILL_MODE = "auto";
   const fromEnv = loadConfig(projectRoot);
   assert.equal(fromEnv?.source, "env");
   assert.equal(fromEnv?.config.mode, "auto");
+  assert.equal(fromEnv?.config.shortlistSize, 9); // env overrides mode only
+
+  assert.equal(clampShortlistSize(undefined), DEFAULT_SHORTLIST_SIZE);
+  assert.equal(clampShortlistSize(0), 1);
+  assert.equal(clampShortlistSize(99), 32);
+  assert.equal(clampShortlistSize(4.8), 4);
 } finally {
   if (prevMode === undefined) delete process.env.JEV_SKILL_MODE;
   else process.env.JEV_SKILL_MODE = prevMode;

@@ -8,12 +8,14 @@ import { readFile } from "node:fs/promises";
 import {
   choice,
   noul,
-  TypeSafeClient,
   type ChoiceQuestion,
   type NoulQuestion,
   type Question,
   type SystemOneResult,
+  type TypeSafeClient,
 } from "@typesafe-ai/sdk";
+import pLimit from "p-limit";
+import { clampShortlistSize } from "./config.ts";
 
 export type RosterSkill = {
   name: string;
@@ -30,7 +32,16 @@ export type Suggestion = {
   fits: Record<string, number>;
 };
 
-const SHORTLIST = 3;
+/** Minimal client surface so tests can fake systemOne without the full SDK. */
+export type SuggestClient = Pick<TypeSafeClient, "systemOne">;
+
+export type SuggestOptions = {
+  signal?: AbortSignal;
+  /** Max stage-1 candidates into stage-2. Default 3. */
+  shortlistSize?: number;
+};
+
+const STAGE1_CONCURRENCY = 3;
 const EXCERPT_CHARS = 700;
 const GATE_THRESHOLD = 0.3;
 const FITS_THRESHOLD = 0.4;
@@ -58,6 +69,21 @@ const RERANK_INSTRUCTIONS =
 
 type Questions = Record<string, Question>;
 
+export function none(
+  reason: string,
+  extras: Partial<Pick<Suggestion, "gate" | "shortlist" | "fits">> = {},
+): Suggestion {
+  return {
+    skill: null,
+    location: null,
+    reason,
+    gate: 0,
+    shortlist: [],
+    fits: {},
+    ...extras,
+  };
+}
+
 function chunkRoster<T>(items: T[], size: number): T[][] {
   if (size > MAX_CHOICES) throw new Error(`chunk size ${size} exceeds API cap ${MAX_CHOICES}`);
   if (items.length === 0) return [[]];
@@ -81,24 +107,44 @@ async function skillExcerpt(skill: RosterSkill, chars: number): Promise<string> 
   }
 }
 
-async function ask(
-  client: TypeSafeClient,
-  state: Record<string, string>,
-  questions: Questions,
-  signal?: AbortSignal,
-): Promise<SystemOneResult<Questions>> {
-  return client.systemOne({ state, questions }, { signal });
+/** Merge chunk rankings: keep best-chunk always, drop high-none chunks, pick top scores. */
+export function pickShortlist(
+  perChunk: Array<Array<[string, number]>>,
+  nonePressure: number[],
+  shortlistSize: number,
+): string[] {
+  const bestChunk = perChunk.reduce(
+    (best, ranked, i) => ((ranked[0]?.[1] ?? -1) > (perChunk[best]?.[0]?.[1] ?? -1) ? i : best),
+    0,
+  );
+
+  const candidates: Array<[string, number]> = [];
+  for (let i = 0; i < perChunk.length; i++) {
+    if (i !== bestChunk && nonePressure[i]! >= NONE_THRESHOLD) continue;
+    candidates.push(...perChunk[i]!);
+  }
+
+  candidates.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+
+  const out: string[] = [];
+  for (const [name] of candidates) {
+    if (out.includes(name)) continue;
+    out.push(name);
+    if (out.length >= shortlistSize) break;
+  }
+  return out;
 }
 
 async function rankWide(
-  client: TypeSafeClient,
+  client: SuggestClient,
   request: string,
   roster: RosterSkill[],
+  shortlistSize: number,
   signal?: AbortSignal,
-): Promise<{ gate: number; shortlist: string[]; chunks: number }> {
+): Promise<{ gate: number; shortlist: string[] }> {
   const groups = chunkRoster(roster, CHUNK_CHOICES);
   const chunked = groups.length > 1;
-  const state = { request, recent_context: "" };
+  const state = { request };
 
   const calls = groups.map((group, index) => {
     const criteria: Record<string, string | null> = {};
@@ -115,10 +161,10 @@ async function rankWide(
     return questions;
   });
 
-  const responses =
-    calls.length === 1
-      ? [await ask(client, state, calls[0]!, signal)]
-      : await Promise.all(calls.map((q) => ask(client, state, q, signal)));
+  const limit = pLimit(STAGE1_CONCURRENCY);
+  const responses = await Promise.all(
+    calls.map((questions) => limit(() => client.systemOne({ state, questions }, { signal }))),
+  );
 
   const perChunk: Array<Array<[string, number]>> = [];
   const nonePressure: number[] = [];
@@ -141,24 +187,11 @@ async function rankWide(
   const oriented = Object.entries(gateValues).map(([k, v]) => (INVERTED.has(k) ? 1 - v : v));
   const gate = oriented.length ? oriented.reduce((a, b) => a + b, 0) / oriented.length : 0;
 
-  const bestChunk = perChunk.reduce(
-    (best, ranked, i) => ((ranked[0]?.[1] ?? -1) > (perChunk[best]?.[0]?.[1] ?? -1) ? i : best),
-    0,
-  );
-
-  const shortlisted: string[] = [];
-  for (let i = 0; i < perChunk.length; i++) {
-    if (i !== bestChunk && nonePressure[i]! >= NONE_THRESHOLD) continue;
-    for (const [name] of perChunk[i]!.slice(0, SHORTLIST)) {
-      if (!shortlisted.includes(name)) shortlisted.push(name);
-    }
-  }
-
-  return { gate, shortlist: shortlisted, chunks: groups.length };
+  return { gate, shortlist: pickShortlist(perChunk, nonePressure, shortlistSize) };
 }
 
 async function rerank(
-  client: TypeSafeClient,
+  client: SuggestClient,
   request: string,
   names: string[],
   byName: Map<string, RosterSkill>,
@@ -167,9 +200,11 @@ async function rerank(
   const criteria: Record<string, string | null> = {
     [NONE_OPTION]: "None of these skills fit the request.",
   };
-  for (const name of names) {
+  const excerpts = await Promise.all(names.map((name) => skillExcerpt(byName.get(name)!, EXCERPT_CHARS)));
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i]!;
     const skill = byName.get(name)!;
-    const excerpt = await skillExcerpt(skill, EXCERPT_CHARS);
+    const excerpt = excerpts[i]!;
     criteria[name] = excerpt ? `${skill.description}\n\nSKILL.md: ${excerpt}` : skill.description;
   }
 
@@ -183,7 +218,7 @@ async function rerank(
     );
   }
 
-  const response = await ask(client, { request, recent_context: "" }, questions, signal);
+  const response = await client.systemOne({ state: { request }, questions }, { signal });
   const which = response.answers.which;
   const picked = which?.type === "choice" ? which.choice : undefined;
   const fits: Record<string, number> = {};
@@ -196,63 +231,44 @@ async function rerank(
 }
 
 export async function suggest(
-  client: TypeSafeClient,
+  client: SuggestClient,
   request: string,
   roster: RosterSkill[],
-  signal?: AbortSignal,
+  options: SuggestOptions = {},
 ): Promise<Suggestion> {
-  const empty = (reason: string): Suggestion => ({
-    skill: null,
-    location: null,
-    reason,
-    gate: 0,
-    shortlist: [],
-    fits: {},
-  });
+  if (!roster.length) return none("roster empty");
 
-  if (!roster.length) return empty("roster empty");
-
+  const shortlistSize = clampShortlistSize(options.shortlistSize);
   const byName = new Map(roster.map((s) => [s.name, s]));
-  const wide = await rankWide(client, request, roster, signal);
+  const wide = await rankWide(client, request, roster, shortlistSize, options.signal);
 
   if (wide.gate < GATE_THRESHOLD) {
-    return {
-      skill: null,
-      location: null,
-      reason: `gate ${wide.gate.toFixed(2)} < ${GATE_THRESHOLD.toFixed(2)}: no skill wanted`,
+    return none(`gate ${wide.gate.toFixed(2)} < ${GATE_THRESHOLD.toFixed(2)}: no skill wanted`, {
       gate: wide.gate,
-      shortlist: [],
-      fits: {},
-    };
+    });
   }
 
-  const shortlist = wide.shortlist.slice(0, Math.max(SHORTLIST, SHORTLIST * wide.chunks));
+  const shortlist = wide.shortlist;
   if (!shortlist.length) {
-    return { skill: null, location: null, reason: "no shortlist", gate: wide.gate, shortlist: [], fits: {} };
+    return none("no shortlist", { gate: wide.gate });
   }
 
-  const second = await rerank(client, request, shortlist, byName, signal);
+  const second = await rerank(client, request, shortlist, byName, options.signal);
   if (!second.winner) {
-    return {
-      skill: null,
-      location: null,
-      reason: "stage 2 picked none: no skill fits",
+    return none("stage 2 picked none: no skill fits", {
       gate: wide.gate,
       shortlist,
       fits: second.fits,
-    };
+    });
   }
 
   const winnerFits = second.fits[second.winner] ?? 0;
   if (winnerFits < FITS_THRESHOLD) {
-    return {
-      skill: null,
-      location: null,
-      reason: `winner ${second.winner} fits ${winnerFits.toFixed(2)} < ${FITS_THRESHOLD.toFixed(2)}`,
+    return none(`winner ${second.winner} fits ${winnerFits.toFixed(2)} < ${FITS_THRESHOLD.toFixed(2)}`, {
       gate: wide.gate,
       shortlist,
       fits: second.fits,
-    };
+    });
   }
 
   const skill = byName.get(second.winner)!;
