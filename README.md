@@ -10,9 +10,12 @@ This extension **strips** `<available_skills>`, then asks [TypeSafe Jev](https:/
 pi install git:github.com/iamdin/pi-jev-skill-suggestion
 ```
 
-Or try without installing:
+Or clone and load once without installing:
 
 ```bash
+git clone https://github.com/iamdin/pi-jev-skill-suggestion.git
+cd pi-jev-skill-suggestion
+bun install
 pi -e ./index.ts
 ```
 
