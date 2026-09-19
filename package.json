@@ -1,10 +1,18 @@
 {
   "name": "pi-jev-skill-suggestion",
   "version": "0.1.0",
-  "private": true,
-  "description": "Pi extension that routes skill selection through TypeSafe Jev instead of stuffing every skill into the system prompt.",
+  "description": "Pi extension that removes the inlined skill list and asks TypeSafe Jev which skill to load",
   "license": "MIT",
   "type": "module",
+  "author": "iamdin <iamdinq@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/iamdin/pi-jev-skill-suggestion.git"
+  },
+  "homepage": "https://github.com/iamdin/pi-jev-skill-suggestion#readme",
+  "bugs": {
+    "url": "https://github.com/iamdin/pi-jev-skill-suggestion/issues"
+  },
   "keywords": [
     "pi-package",
     "pi",
@@ -13,13 +21,20 @@
     "jev",
     "skills"
   ],
+  "files": [
+    "index.ts",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "pi": {
     "extensions": [
       "./index.ts"
     ]
   },
   "scripts": {
-    "check": "tsc --noEmit && bun scripts/check-strip.ts && bun scripts/check-router.ts"
+    "check": "tsc --noEmit && bun scripts/check-strip.ts && bun scripts/check-router.ts",
+    "prepublishOnly": "bun run check"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

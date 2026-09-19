@@ -7,6 +7,12 @@ This extension **strips** `<available_skills>`, then asks [TypeSafe Jev](https:/
 ## Install
 
 ```bash
+pi install npm:pi-jev-skill-suggestion
+```
+
+Or from git:
+
+```bash
 pi install git:github.com/iamdin/pi-jev-skill-suggestion
 ```
 
@@ -160,6 +166,7 @@ scripts/check-router.ts
 
 ## See also
 
+- [pi-jev-skill-bench](https://github.com/iamdin/pi-jev-skill-bench) — BM25 vs Jev across roster sizes 50–500
 - [Cookbook](https://docs.typesafe.ai/cookbooks/skill_suggestion.md)
 - [Hermes router](https://github.com/DECRUX9812/typesafe-skill-router)
 - [Codex router](https://github.com/droid-Q/jev-skill-router)
