@@ -30,7 +30,7 @@ export TYPESAFE_API_KEY=ts_...
 
 3. Start Pi as usual. First session with a key set asks you to pick a mode (`tool` or `auto`).
 
-**No key → extension no-ops.** Pi keeps its normal skill listing; nothing is stripped.
+> **No key → extension no-ops.** Pi keeps its normal skill listing; nothing is stripped.
 
 ## How to use
 
