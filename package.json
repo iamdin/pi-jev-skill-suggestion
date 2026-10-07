@@ -33,7 +33,7 @@
     ]
   },
   "scripts": {
-    "check": "tsc --noEmit && bun scripts/check-strip.ts && bun scripts/check-router.ts",
+    "check": "tsc --noEmit && bun test/check-strip.ts && bun test/check-router.ts && bun test/check-history.ts",
     "prepublishOnly": "bun run check"
   },
   "peerDependencies": {

@@ -34,13 +34,22 @@ pi -e ./index.ts
 export TYPESAFE_API_KEY=ts_...
 ```
 
-3. Start Pi as usual. First session with a key set asks you to pick a mode (`tool` or `auto`).
+3. Start Pi as usual. First session with a key set asks when Jev should suggest: `onDemand`, `onPrompt`, both, or off.
 
 > **No key → extension no-ops.** Pi keeps its normal skill listing; nothing is stripped.
 
 ## How to use
 
-### `tool` mode (default)
+Two triggers, each switched on with `true`. Turn on one or both:
+
+| Trigger | When Jev runs |
+| --- | --- |
+| `onDemand` | the agent calls `skill_suggest` when it thinks a skill may help |
+| `onPrompt` | the extension asks before every user prompt |
+
+Change anytime with `/jev-skill-suggestion`.
+
+### `onDemand`
 
 You chat normally. The agent no longer sees the skill roster in the system prompt. When a task looks skill-shaped, it should call:
 
@@ -53,9 +62,11 @@ skill_suggest({ task: "<what the user asked>" })
 | `{ "skill": "foo", "location": ".../SKILL.md", ... }` | `read` that file and follow it |
 | `{ "skill": null, "reason": "..." }` | continue without a skill |
 
-You do not call the tool yourself. Switch mode anytime with `/jev-skill-mode`.
+If the suggested skill is already in context (read earlier and not compacted away), `next` says so instead of asking for a re-read.
 
-### `auto` mode
+You do not call the tool yourself.
+
+### `onPrompt`
 
 You chat normally. After each user prompt, the extension runs Jev itself:
 
@@ -63,10 +74,18 @@ You chat normally. After each user prompt, the extension runs Jev itself:
   `Skill recommendation for this turn: skill / location / reason`  
   The agent is told to read that file.
 - **No fit / gate says quiet / API error** → nothing injected; the turn continues.
+- **`/skill:name` prompt** → no Jev call; you already picked.
+- **Winner already in context** (read earlier and not compacted away) → nothing injected.
 
-> **Cost / latency:** every user prompt triggers at least one Jev call before the agent starts — including quiet turns like `what is 2+2?`. Prefer `tool` if you only want routing when the model decides a skill might help.
+> **Cost / latency:** every user prompt triggers at least one Jev call before the agent starts — including quiet turns like `what is 2+2?`. Exceptions: `/skill:name` prompts, and rosters below `minSkillsToRoute`. Use only `onDemand` if you only want routing when the model decides a skill might help.
 
-In `auto`, `skill_suggest` is deactivated so the model does not double-route.
+With only `onPrompt`, `skill_suggest` is deactivated.
+
+### Both on
+
+Each user prompt is routed as in `onPrompt`, and `skill_suggest` stays active for **sub-tasks** that come up mid-turn (e.g. the deck is done, now it needs a review). The agent is told not to re-route the user's own request. Same per-prompt cost as `onPrompt`, plus any tool calls the model makes.
+
+Both off = extension off: Pi keeps its listing.
 
 ### What to try
 
@@ -82,7 +101,7 @@ review this diff against the repo standards
 what is 2+2?
 ```
 
-Skill-shaped asks should route to a skill (or recommend one in `auto`). Quiet asks like `2+2` should stay quiet.
+Skill-shaped asks should route to a skill (or get recommended with `onPrompt`). Quiet asks like `2+2` should stay quiet.
 
 ## How it works
 
@@ -93,11 +112,11 @@ user user prompt
            │
            ▼
    strip <available_skills>
-   inject short mode guidance
+   inject short skill guidance
            │
      ┌─────┴─────┐
      │           │
-  tool mode   auto mode
+  onDemand    onPrompt  
      │           │
      ▼           ▼
  agent may    extension calls
@@ -116,13 +135,15 @@ user user prompt
 
 Roster = installed skills that are not `disableModelInvocation`. Built each turn from Pi's skill list.
 
+**Small roster → passthrough.** Below `minSkillsToRoute` skills (default **20**), the listing is cheap enough: nothing is stripped, Jev is never called, and `skill_suggest` is deactivated.
+
 ### Inside `suggest()`
 
 Same two-stage idea as the [skill suggestion cookbook](https://docs.typesafe.ai/cookbooks/skill_suggestion.md):
 
 1. **Gate** — three Noul questions (act on user's system? needs a documented procedure? would prose alone suffice?). Mean oriented score; below **0.30** → no skill.
 2. **Wide rank** — roster chunked (≤254 skills + `none_of_these` per call). Up to **3** concurrent `systemOne` Choice calls.
-3. **Shortlist** — merge chunk rankings by score; always keep the best chunk; drop other chunks whose `none_of_these` ≥ **0.50**; keep top `shortlistSize` (default **3**).
+3. **Shortlist** — when chunked, take each surviving chunk's winner (cross-chunk probs aren't comparable), then fill from the best chunk; drop other chunks whose `none_of_these` ≥ **0.50**; keep top `shortlistSize` (default **3**). Stage-2 compares them for real.
 4. **Narrow** — read ~**700** chars of each shortlisted `SKILL.md`, Choice + per-candidate fits Noul. Winner must beat fits **0.40**; else none.
 
 Timeout / API error → **fail open** (no skill; turn continues).
@@ -131,16 +152,16 @@ Timeout / API error → **fail open** (no skill; turn continues).
 
 Priority:
 
-1. `JEV_SKILL_MODE=tool|auto` — overrides **mode only**
+1. `JEV_SKILL_ON_PROMPT` / `JEV_SKILL_ON_DEMAND` = `true|false|1|0` — each overrides **its trigger only**
 2. `.pi/jev-skill-suggestion.json`
 3. `~/.pi/agent/jev-skill-suggestion.json`
 4. first-session picker → writes global
 
 ```json
-{ "mode": "tool", "shortlistSize": 3 }
+{ "onPrompt": false, "onDemand": true, "shortlistSize": 3, "minSkillsToRoute": 20 }
 ```
 
-`shortlistSize` = how many stage-1 candidates enter stage-2 (clamped `1..32`). `/jev-skill-mode` updates global `mode` and keeps the current `shortlistSize`.
+`shortlistSize` = how many stage-1 candidates enter stage-2 (clamped `1..32`). `minSkillsToRoute` = strip and route only at this many skills or more (`0` = always). `/jev-skill-suggestion` updates the global triggers and keeps the other values. Old `{ "mode": "tool" | "auto" }` files still load as `onDemand` / `onPrompt`.
 
 ## Privacy
 
@@ -156,12 +177,14 @@ bun run check   # tsc + strip/config + router asserts
 ```
 
 ```text
-index.ts               extension entry (strip, modes, tool)
-src/config.ts          mode + shortlistSize
-src/strip.ts           listing strip + guidance + auto message
+index.ts               extension entry (strip, triggers, tool)
+src/config.ts          triggers + shortlistSize + minSkillsToRoute
+src/strip.ts           listing strip + guidance + onPrompt message
 src/router.ts          two-stage Jev suggest()
-scripts/check-strip.ts
-scripts/check-router.ts
+src/history.ts         skills still in context (compaction-aware)
+test/check-strip.ts
+test/check-router.ts
+test/check-history.ts
 ```
 
 ## See also

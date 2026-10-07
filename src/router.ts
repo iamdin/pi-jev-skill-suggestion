@@ -107,30 +107,57 @@ async function skillExcerpt(skill: RosterSkill, chars: number): Promise<string> 
   }
 }
 
-/** Merge chunk rankings: keep best-chunk always, drop high-none chunks, pick top scores. */
+/**
+ * Build a shortlist from chunked Choice ranks.
+ * Cross-chunk probabilities are not comparable (each chunk renormalizes to 1),
+ * so take each surviving chunk's winner first, then fill from the best chunk.
+ * Stage-2 does the real cross-candidate comparison.
+ */
 export function pickShortlist(
   perChunk: Array<Array<[string, number]>>,
   nonePressure: number[],
   shortlistSize: number,
 ): string[] {
+  if (perChunk.length === 0 || shortlistSize <= 0) return [];
+
   const bestChunk = perChunk.reduce(
     (best, ranked, i) => ((ranked[0]?.[1] ?? -1) > (perChunk[best]?.[0]?.[1] ?? -1) ? i : best),
     0,
   );
 
-  const candidates: Array<[string, number]> = [];
+  const surviving: number[] = [];
   for (let i = 0; i < perChunk.length; i++) {
-    if (i !== bestChunk && nonePressure[i]! >= NONE_THRESHOLD) continue;
-    candidates.push(...perChunk[i]!);
+    if (i === bestChunk || nonePressure[i]! < NONE_THRESHOLD) surviving.push(i);
   }
-
-  candidates.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  surviving.sort((a, b) => {
+    if (a === bestChunk) return -1;
+    if (b === bestChunk) return 1;
+    return nonePressure[a]! - nonePressure[b]! || a - b;
+  });
 
   const out: string[] = [];
-  for (const [name] of candidates) {
-    if (out.includes(name)) continue;
+  const seen = new Set<string>();
+  const push = (name: string | undefined): boolean => {
+    if (!name || seen.has(name)) return out.length >= shortlistSize;
     out.push(name);
-    if (out.length >= shortlistSize) break;
+    seen.add(name);
+    return out.length >= shortlistSize;
+  };
+
+  // Fair tournament seat: one winner per surviving chunk.
+  for (const i of surviving) {
+    if (push(perChunk[i]?.[0]?.[0])) return out;
+  }
+
+  // Same-chunk ranks are comparable — fill from the strongest chunk first.
+  for (const [name] of perChunk[bestChunk] ?? []) {
+    if (push(name)) return out;
+  }
+  for (const i of surviving) {
+    if (i === bestChunk) continue;
+    for (const [name] of perChunk[i] ?? []) {
+      if (push(name)) return out;
+    }
   }
   return out;
 }
