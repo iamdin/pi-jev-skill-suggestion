@@ -1,17 +1,21 @@
 /**
- * Local decision log (JSONL) + stats. Never leaves the machine.
- * Prompts are stored as a short hash + length only.
+ * Decision records live in the Pi session itself, as `custom` entries
+ * (`pi.appendEntry`, never sent to the LLM) — so each record sits next to the
+ * conversation it came from. Prompts are stored as a short hash + length only.
  */
 
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+
+export const ENTRY_TYPE = "jev-skill-suggestion";
 
 export type Trigger = "onPrompt" | "onDemand" | "shadow";
 export type SkipWhy = "explicit-skill" | "trivial" | "extension-input";
 
-type Base = { ts: string; session: string; turn: number };
+/** `turn` = id of the user prompt the record belongs to (fresh per prompt, unique across resumes). */
+type Base = { turn: string };
 
 export type LogRecord =
   | (Base & {
@@ -32,41 +36,57 @@ export type LogRecord =
   | (Base & { t: "skip"; trigger: Trigger; why: SkipWhy })
   | (Base & { t: "read"; skill: string });
 
-export function logPath(): string {
-  return path.join(getAgentDir(), "jev-skill-suggestion", "decisions.jsonl");
-}
-
 export function hashPrompt(text: string): string {
   return crypto.createHash("sha256").update(text).digest("hex").slice(0, 16);
 }
 
-/** Best-effort append; logging must never break a turn. */
-export async function appendLog(record: LogRecord, file = logPath()): Promise<void> {
-  try {
-    await fs.mkdir(path.dirname(file), { recursive: true });
-    await fs.appendFile(file, `${JSON.stringify(record)}\n`, "utf8");
-  } catch {
-    // ignore
-  }
+export function newTurnId(): string {
+  return crypto.randomUUID().slice(0, 8);
 }
 
-export async function readLog(file = logPath()): Promise<LogRecord[]> {
-  let text: string;
-  try {
-    text = await fs.readFile(file, "utf8");
-  } catch {
-    return [];
-  }
+/** Our records from one session's entries (all branches). */
+export function recordsFromEntries(entries: Array<SessionEntry | { type: string; customType?: string; data?: unknown }>): LogRecord[] {
   const out: LogRecord[] = [];
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      out.push(JSON.parse(line) as LogRecord);
-    } catch {
-      // skip torn line
+  for (const e of entries) {
+    if (e.type === "custom" && "customType" in e && e.customType === ENTRY_TYPE && e.data) {
+      out.push(e.data as LogRecord);
     }
   }
   return out;
+}
+
+/** Records from every `*.jsonl` session file under `dir` (recursive). Unreadable lines are skipped. */
+export async function recordsFromSessionDir(dir: string): Promise<{ sessions: number; records: LogRecord[] }> {
+  let files: string[];
+  try {
+    files = (await fs.readdir(dir, { recursive: true })).filter((f) => f.endsWith(".jsonl"));
+  } catch {
+    return { sessions: 0, records: [] };
+  }
+  const records: LogRecord[] = [];
+  let sessions = 0;
+  for (const f of files) {
+    let text: string;
+    try {
+      text = await fs.readFile(path.join(dir, f), "utf8");
+    } catch {
+      continue;
+    }
+    if (!text.includes(ENTRY_TYPE)) continue; // cheap pre-filter
+    const entries = [];
+    for (const line of text.split("\n")) {
+      if (!line.includes(ENTRY_TYPE)) continue;
+      try {
+        entries.push(JSON.parse(line));
+      } catch {
+        // torn line
+      }
+    }
+    const found = recordsFromEntries(entries);
+    if (found.length) sessions++;
+    records.push(...found);
+  }
+  return { sessions, records };
 }
 
 export type Stats = {
@@ -87,7 +107,7 @@ function pct(sorted: number[], p: number): number {
 }
 
 export function summarize(records: LogRecord[]): Stats {
-  const key = (r: Base) => `${r.session}#${r.turn}`;
+  const key = (r: Base) => r.turn;
   const readsByTurn = new Map<string, Set<string>>();
   for (const r of records) {
     if (r.t !== "read") continue;

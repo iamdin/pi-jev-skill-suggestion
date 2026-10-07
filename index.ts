@@ -8,6 +8,7 @@
  * - onDemand: model calls skill_suggest
  */
 
+import path from "node:path";
 import { parseSkillBlock, type ExtensionAPI, type Skill } from "@earendil-works/pi-coding-agent";
 import { TypeSafeClient } from "@typesafe-ai/sdk";
 import { Type } from "typebox";
@@ -24,7 +25,18 @@ import {
   type Triggers,
 } from "./src/config.ts";
 import { resolveReadPath, skillsInContext } from "./src/history.ts";
-import { appendLog, formatStats, hashPrompt, logPath, readLog, summarize, type SkipWhy, type Trigger } from "./src/log.ts";
+import {
+  ENTRY_TYPE,
+  formatStats,
+  hashPrompt,
+  newTurnId,
+  recordsFromEntries,
+  recordsFromSessionDir,
+  summarize,
+  type LogRecord,
+  type SkipWhy,
+  type Trigger,
+} from "./src/log.ts";
 import { none, suggest, type RosterSkill, type Suggestion } from "./src/router.ts";
 import { formatAutoSuggestion, isTrivialPrompt, skillGuidance, stripAvailableSkills } from "./src/strip.ts";
 
@@ -81,17 +93,24 @@ export default function (pi: ExtensionAPI) {
   let shadow = false;
   let logging = true;
   let passthrough = false; // off, shadow, or small roster: Pi's own listing stays
-  let turn = 0;
+  let turn = newTurnId();
   let inputSource: string | undefined;
-  /** Fire-and-forget work (logs, shadow routes) flushed on shutdown so `pi -p` doesn't drop it. */
+  /** Shadow routes run off the critical path; flushed on shutdown so `pi -p` doesn't drop them. */
   const pending = new Set<Promise<unknown>>();
   const track = (p: Promise<unknown>) => {
     const done = p.catch(() => {}).finally(() => pending.delete(done));
     pending.add(done);
   };
 
-  type Ctx = { sessionManager: { getSessionId(): string } };
-  const base = (ctx: Ctx) => ({ ts: new Date().toISOString(), session: ctx.sessionManager.getSessionId(), turn });
+  /** Record into the current Pi session (custom entry, not sent to the LLM). */
+  function record(rec: LogRecord) {
+    if (!logging) return;
+    try {
+      pi.appendEntry(ENTRY_TYPE, rec);
+    } catch {
+      // session torn down — drop
+    }
+  }
 
   function skipWhy(prompt: string): SkipWhy | null {
     if (parseSkillBlock(prompt)) return "explicit-skill"; // `/skill:name` arrives expanded
@@ -100,22 +119,17 @@ export default function (pi: ExtensionAPI) {
     return null;
   }
 
-  function logSkip(ctx: Ctx, trigger: Trigger, why: SkipWhy) {
-    if (logging) track(appendLog({ t: "skip", ...base(ctx), trigger, why }));
-  }
-
   async function route(
-    ctx: Ctx,
     trigger: Trigger,
     request: string,
     signal?: AbortSignal,
   ): Promise<{ result: Suggestion; log: (shown: boolean) => void }> {
     const t0 = performance.now();
-    const record = (result: Suggestion, shown: boolean, error?: string) => {
-      if (!logging) return;
-      track(appendLog({
+    const at = turn; // shadow may finish after the next prompt starts
+    const write = (result: Suggestion, shown: boolean, error?: string) =>
+      record({
         t: "suggest",
-        ...base(ctx),
+        turn: at,
         trigger,
         prompt: hashPrompt(request),
         promptChars: request.length,
@@ -127,14 +141,13 @@ export default function (pi: ExtensionAPI) {
         ms: Math.round(performance.now() - t0),
         shown,
         ...(error ? { error } : {}),
-      }));
-    };
+      });
     try {
       const result = await suggest(client, request, roster, { signal, shortlistSize });
-      return { result, log: (shown) => record(result, shown) };
+      return { result, log: (shown) => write(result, shown) };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      record(none("error"), false, message);
+      write(none("error"), false, message);
       throw err;
     }
   }
@@ -198,9 +211,27 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("jev-skill-stats", {
-    description: "Show local skill-suggestion stats (calls, use rate, latency, shadow agreement)",
-    async handler(_args, ctx) {
-      ctx.ui.notify(`${formatStats(summarize(await readLog()))}\n\nlog: ${logPath()}`, "info");
+    description: "Skill-suggestion stats from session records: (empty) this session · project · all",
+    getArgumentCompletions: (prefix) =>
+      ["project", "all"].filter((v) => v.startsWith(prefix)).map((v) => ({ value: v, label: v })),
+    async handler(args, ctx) {
+      const scope = args.trim() || "session";
+      let records: LogRecord[];
+      let where: string;
+      if (scope === "session") {
+        records = recordsFromEntries(ctx.sessionManager.getEntries());
+        where = "this session";
+      } else if (scope === "project" || scope === "all") {
+        const projectDir = ctx.sessionManager.getSessionDir();
+        const dir = scope === "all" ? path.dirname(projectDir) : projectDir; // sessions root / this cwd
+        const found = await recordsFromSessionDir(dir);
+        records = found.records;
+        where = `${found.sessions} sessions in ${dir}`;
+      } else {
+        ctx.ui.notify("usage: /jev-skill-stats [project|all]", "warning");
+        return;
+      }
+      ctx.ui.notify(`${formatStats(summarize(records))}\n\n(${where})`, "info");
     },
   });
 
@@ -219,12 +250,12 @@ export default function (pi: ExtensionAPI) {
     if (typeof raw !== "string") return;
     const location = resolveReadPath(raw, ctx.cwd);
     const skill = roster.find((s) => s.filePath === location);
-    if (skill) track(appendLog({ t: "read", ...base(ctx), skill: skill.name }));
+    if (skill) record({ t: "read", turn, skill: skill.name });
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
     roster = toRoster(event.systemPromptOptions.skills);
-    turn++;
+    turn = newTurnId();
     const off = !triggers.onPrompt && !triggers.onDemand;
     const next = shadow || off || roster.length < minSkillsToRoute; // small roster: listing is cheap enough
     if (next !== passthrough) {
@@ -235,8 +266,8 @@ export default function (pi: ExtensionAPI) {
     if (shadow) {
       // Pi keeps its listing; Jev runs off the critical path and is only logged.
       const why = skipWhy(event.prompt);
-      if (why) logSkip(ctx, "shadow", why);
-      else if (roster.length) track(route(ctx, "shadow", event.prompt).then((r) => r.log(false)));
+      if (why) record({ t: "skip", turn, trigger: "shadow", why });
+      else if (roster.length) track(route("shadow", event.prompt).then((r) => r.log(false)));
       return;
     }
     if (passthrough) return;
@@ -247,12 +278,12 @@ export default function (pi: ExtensionAPI) {
 
     const why = skipWhy(event.prompt);
     if (why) {
-      logSkip(ctx, "onPrompt", why);
+      record({ t: "skip", turn, trigger: "onPrompt", why });
       return { systemPrompt };
     }
 
     try {
-      const { result, log } = await route(ctx, "onPrompt", event.prompt);
+      const { result, log } = await route("onPrompt", event.prompt);
       const loaded = skillsInContext(ctx.sessionManager.buildContextEntries(), ctx.cwd);
       const content =
         result.location && loaded.has(result.location) ? null : formatAutoSuggestion(result);
@@ -288,7 +319,7 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       try {
-        const { result, log } = await route(ctx, "onDemand", params.task, signal);
+        const { result, log } = await route("onDemand", params.task, signal);
         log(!!result.skill);
         const loaded = skillsInContext(ctx.sessionManager.buildContextEntries(), ctx.cwd);
         return {

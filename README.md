@@ -90,11 +90,13 @@ Both off = extension off: Pi keeps its listing.
 
 ### Shadow (evaluate before switching)
 
-`"shadow": true` keeps Pi's native skill listing untouched and routes every prompt with Jev **in the background** — nothing is stripped or injected, no added latency. Only the local log records what Jev would have picked next to what the model actually read. Run it for a while, then check `/jev-skill-stats`.
+`"shadow": true` keeps Pi's native skill listing untouched and routes every prompt with Jev **in the background** — nothing is stripped or injected, no added latency. Only the session records what Jev would have picked next to what the model actually read. Run it for a while, then check `/jev-skill-stats`.
 
 ### Stats
 
-`/jev-skill-stats` summarizes the local decision log:
+Every decision is recorded **inside the Pi session** as a `custom` entry (`customType: "jev-skill-suggestion"`, never sent to the model), right next to the conversation it came from — open the session file to see why a turn got (or didn't get) a skill.
+
+`/jev-skill-stats` summarizes those records — `/jev-skill-stats` for this session, `/jev-skill-stats project` for every session in this directory, `/jev-skill-stats all` for every session:
 
 - per trigger: calls, suggestions shown, **used** (the suggested `SKILL.md` was read in the same turn), errors, p50/p95 latency
 - skipped prompts (no Jev call) by reason
@@ -175,7 +177,7 @@ Priority:
 { "onPrompt": false, "onDemand": true, "shortlistSize": 3, "minSkillsToRoute": 20, "shadow": false, "log": true }
 ```
 
-`shortlistSize` = how many stage-1 candidates enter stage-2 (clamped `1..32`). `minSkillsToRoute` = strip and route only at this many skills or more (`0` = always). `/jev-skill-suggestion` updates the global triggers and keeps the other values. `shadow` = log-only evaluation (see above). `log` = write the local decision log (default `true`). Old `{ "mode": "tool" | "auto" }` files still load as `onDemand` / `onPrompt`.
+`shortlistSize` = how many stage-1 candidates enter stage-2 (clamped `1..32`). `minSkillsToRoute` = strip and route only at this many skills or more (`0` = always). `/jev-skill-suggestion` updates the global triggers and keeps the other values. `shadow` = log-only evaluation (see above). `log` = record decisions into the session (default `true`). Old `{ "mode": "tool" | "auto" }` files still load as `onDemand` / `onPrompt`.
 
 ## Privacy
 
@@ -183,7 +185,7 @@ Priority:
 
 **Not sent:** chat history, workspace files, credentials, tool results, system prompt.
 
-**Local log** (`~/.pi/agent/jev-skill-suggestion/decisions.jsonl`, never uploaded): timestamp, session id, a 16-hex **hash** + length of the prompt (not its text), roster size, picked skill, scores, latency, and which roster skills were read. Turn off with `"log": false`.
+**Session records** (stay in your local session files, never uploaded or sent to the model): a 16-hex **hash** + length of the prompt (not its text — the prompt is already in the session anyway), roster size, picked skill, scores, latency, and which roster skills were read. Turn off with `"log": false`.
 
 ## Develop
 
@@ -198,7 +200,7 @@ src/config.ts          triggers + shortlistSize + minSkillsToRoute
 src/strip.ts           listing strip + guidance + onPrompt message
 src/router.ts          two-stage Jev suggest()
 src/history.ts         skills still in context (compaction-aware)
-src/log.ts             local decision log + /jev-skill-stats
+src/log.ts             session decision records + /jev-skill-stats
 test/check-strip.ts
 test/check-router.ts
 test/check-history.ts

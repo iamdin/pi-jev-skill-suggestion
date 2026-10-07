@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { appendLog, readLog, summarize, type LogRecord } from "../src/log.ts";
+import { ENTRY_TYPE, recordsFromEntries, recordsFromSessionDir, summarize, type LogRecord } from "../src/log.ts";
 import { isTrivialPrompt } from "../src/strip.ts";
 
 for (const p of ["ok", "OK!", "thanks", "继续", "好的。", "lgtm", "  go ahead  "]) assert.ok(isTrivialPrompt(p), p);
@@ -10,7 +10,7 @@ for (const p of ["ok, now make it a pptx", "做个 PPT", "continue with the xlsx
   assert.equal(isTrivialPrompt(p), false, p);
 }
 
-const at = (session: string, turn: number) => ({ ts: "", session, turn });
+const at = (session: string, turn: number) => ({ turn: `${session}${turn}` });
 const sug = (session: string, turn: number, trigger: "onPrompt" | "onDemand" | "shadow", skill: string | null, shown: boolean, ms = 100): LogRecord => ({
   t: "suggest", ...at(session, turn), trigger, prompt: "h", promptChars: 1, roster: 50,
   skill, reason: "", gate: 0.5, fits: {}, ms, shown,
@@ -47,14 +47,32 @@ assert.deepEqual(s.skips, { trivial: 1 });
 assert.deepEqual(s.shadow, { turns: 5, agree: 2, jevOnly: 1, nativeOnly: 1, differ: 1 });
 assert.deepEqual(s.perSkill, [{ skill: "pptx", suggested: 3, used: 1 }]);
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jev-log-"));
+// Records round-trip through session custom entries; other entries are ignored.
+const entry = (data: LogRecord) => ({ type: "custom", customType: ENTRY_TYPE, data });
+const sessionLines = [
+  { type: "session", id: "s" },
+  entry(records[0]!),
+  { type: "custom", customType: "someone-else", data: { t: "suggest" } },
+  { type: "message", message: { role: "user", content: "hi" } },
+  entry(records[1]!),
+];
+assert.deepEqual(recordsFromEntries(sessionLines), [records[0], records[1]]);
+
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), "jev-sessions-"));
 try {
-  const file = path.join(dir, "nested", "decisions.jsonl");
-  await appendLog(records[0]!, file);
-  fs.appendFileSync(file, "{torn\n");
-  await appendLog(records[1]!, file);
-  assert.equal((await readLog(file)).length, 2);
-  assert.deepEqual(await readLog(path.join(dir, "missing.jsonl")), []);
+  fs.mkdirSync(path.join(dir, "--repo-a--"));
+  fs.mkdirSync(path.join(dir, "--repo-b--"));
+  fs.writeFileSync(
+    path.join(dir, "--repo-a--", "1.jsonl"),
+    `${sessionLines.map((l) => JSON.stringify(l)).join("\n")}\n{torn ${ENTRY_TYPE}\n`,
+  );
+  fs.writeFileSync(path.join(dir, "--repo-b--", "2.jsonl"), `${JSON.stringify(entry(records[2]!))}\n`);
+  fs.writeFileSync(path.join(dir, "--repo-b--", "3.jsonl"), `${JSON.stringify({ type: "session" })}\n`);
+  const all = await recordsFromSessionDir(dir);
+  assert.equal(all.sessions, 2);
+  assert.equal(all.records.length, 3);
+  assert.equal((await recordsFromSessionDir(path.join(dir, "--repo-b--"))).records.length, 1);
+  assert.deepEqual(await recordsFromSessionDir(path.join(dir, "missing")), { sessions: 0, records: [] });
 } finally {
   fs.rmSync(dir, { recursive: true, force: true });
 }
