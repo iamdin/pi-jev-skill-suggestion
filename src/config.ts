@@ -8,12 +8,15 @@ export type ExtensionConfig = {
   mode: SuggestMode;
   /** Max stage-1 candidates sent to stage-2 rerank. */
   shortlistSize: number;
+  /** Below this many skills, leave Pi's listing alone and skip Jev. 0 = always route. */
+  minRoster: number;
 };
 
 const FILENAME = "jev-skill-suggestion.json";
 export const MODE_ENV = "JEV_SKILL_MODE";
 export const DEFAULT_SHORTLIST_SIZE = 3;
 export const MAX_SHORTLIST_SIZE = 32;
+export const DEFAULT_MIN_ROSTER = 20;
 
 export function globalConfigPath(): string {
   return join(getAgentDir(), FILENAME);
@@ -32,6 +35,11 @@ export function clampShortlistSize(value: unknown): number {
   return Math.min(MAX_SHORTLIST_SIZE, Math.max(1, Math.trunc(value)));
 }
 
+export function clampMinRoster(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_MIN_ROSTER;
+  return Math.max(0, Math.trunc(value));
+}
+
 export function modeFromEnv(env: NodeJS.ProcessEnv = process.env): SuggestMode | null {
   const raw = env[MODE_ENV]?.trim().toLowerCase();
   return isSuggestMode(raw) ? raw : null;
@@ -40,9 +48,17 @@ export function modeFromEnv(env: NodeJS.ProcessEnv = process.env): SuggestMode |
 function readConfigFile(path: string): ExtensionConfig | null {
   if (!existsSync(path)) return null;
   try {
-    const raw = JSON.parse(readFileSync(path, "utf8")) as { mode?: unknown; shortlistSize?: unknown };
+    const raw = JSON.parse(readFileSync(path, "utf8")) as {
+      mode?: unknown;
+      shortlistSize?: unknown;
+      minRoster?: unknown;
+    };
     if (!isSuggestMode(raw.mode)) return null;
-    return { mode: raw.mode, shortlistSize: clampShortlistSize(raw.shortlistSize) };
+    return {
+      mode: raw.mode,
+      shortlistSize: clampShortlistSize(raw.shortlistSize),
+      minRoster: clampMinRoster(raw.minRoster),
+    };
   } catch {
     return null;
   }
@@ -60,7 +76,7 @@ function readFileConfig(cwd?: string): { config: ExtensionConfig; source: "proje
 
 /**
  * Resolve config: env `JEV_SKILL_MODE` overrides mode only;
- * `shortlistSize` still comes from project/global JSON (else default).
+ * `shortlistSize` / `minRoster` still come from project/global JSON (else default).
  */
 export function loadConfig(cwd?: string): { config: ExtensionConfig; source: "env" | "project" | "global" } | null {
   const file = readFileConfig(cwd);
@@ -70,6 +86,7 @@ export function loadConfig(cwd?: string): { config: ExtensionConfig; source: "en
       config: {
         mode: fromEnv,
         shortlistSize: file?.config.shortlistSize ?? DEFAULT_SHORTLIST_SIZE,
+        minRoster: file?.config.minRoster ?? DEFAULT_MIN_ROSTER,
       },
       source: "env",
     };
@@ -83,7 +100,15 @@ export function saveConfig(config: ExtensionConfig): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(
     path,
-    `${JSON.stringify({ mode: config.mode, shortlistSize: clampShortlistSize(config.shortlistSize) }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        mode: config.mode,
+        shortlistSize: clampShortlistSize(config.shortlistSize),
+        minRoster: clampMinRoster(config.minRoster),
+      },
+      null,
+      2,
+    )}\n`,
     "utf8",
   );
 }
