@@ -39,6 +39,10 @@ export type SuggestOptions = {
   signal?: AbortSignal;
   /** Max stage-1 candidates into stage-2. Default 3. */
   shortlistSize?: number;
+  /** Override gate cutoff (default 0.30). -Infinity always runs stage 2 (bench recording). */
+  gateThreshold?: number;
+  /** Override winner fits cutoff (default 0.40). */
+  fitsThreshold?: number;
 };
 
 const STAGE1_CONCURRENCY = 3;
@@ -266,11 +270,13 @@ export async function suggest(
   if (!roster.length) return none("roster empty");
 
   const shortlistSize = clampShortlistSize(options.shortlistSize);
+  const gateThreshold = options.gateThreshold ?? GATE_THRESHOLD;
+  const fitsThreshold = options.fitsThreshold ?? FITS_THRESHOLD;
   const byName = new Map(roster.map((s) => [s.name, s]));
   const wide = await rankWide(client, request, roster, shortlistSize, options.signal);
 
-  if (wide.gate < GATE_THRESHOLD) {
-    return none(`gate ${wide.gate.toFixed(2)} < ${GATE_THRESHOLD.toFixed(2)}: no skill wanted`, {
+  if (wide.gate < gateThreshold) {
+    return none(`gate ${wide.gate.toFixed(2)} < ${gateThreshold.toFixed(2)}: no skill wanted`, {
       gate: wide.gate,
     });
   }
@@ -290,8 +296,8 @@ export async function suggest(
   }
 
   const winnerFits = second.fits[second.winner] ?? 0;
-  if (winnerFits < FITS_THRESHOLD) {
-    return none(`winner ${second.winner} fits ${winnerFits.toFixed(2)} < ${FITS_THRESHOLD.toFixed(2)}`, {
+  if (winnerFits < fitsThreshold) {
+    return none(`winner ${second.winner} fits ${winnerFits.toFixed(2)} < ${fitsThreshold.toFixed(2)}`, {
       gate: wide.gate,
       shortlist,
       fits: second.fits,
