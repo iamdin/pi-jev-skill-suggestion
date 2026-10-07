@@ -15,6 +15,10 @@ export type ExtensionConfig = Triggers & {
   shortlistSize: number;
   /** Below this many skills, leave Pi's listing alone and skip Jev. 0 = always route. */
   minSkillsToRoute: number;
+  /** Keep Pi's native listing; route every prompt in the background and only log. */
+  shadow: boolean;
+  /** Append decisions to the local JSONL log. */
+  log: boolean;
 };
 
 const FILENAME = "jev-skill-suggestion.json";
@@ -73,6 +77,8 @@ function readConfigFile(path: string): ExtensionConfig | null {
       mode?: unknown; // 0.1.x: "tool" | "auto"
       shortlistSize?: unknown;
       minSkillsToRoute?: unknown;
+      shadow?: unknown;
+      log?: unknown;
     };
     let triggers: Triggers;
     if (typeof raw.onPrompt === "boolean" || typeof raw.onDemand === "boolean") {
@@ -86,6 +92,8 @@ function readConfigFile(path: string): ExtensionConfig | null {
       ...triggers,
       shortlistSize: clampShortlistSize(raw.shortlistSize),
       minSkillsToRoute: clampMinSkillsToRoute(raw.minSkillsToRoute),
+      shadow: raw.shadow === true,
+      log: raw.log !== false,
     };
   } catch {
     return null;
@@ -116,6 +124,8 @@ export function loadConfig(cwd?: string): { config: ExtensionConfig; source: "en
       onDemand: false,
       shortlistSize: DEFAULT_SHORTLIST_SIZE,
       minSkillsToRoute: DEFAULT_MIN_SKILLS_TO_ROUTE,
+      shadow: false,
+      log: true,
       ...file?.config,
       ...fromEnv,
     },
@@ -135,6 +145,8 @@ export function saveConfig(config: ExtensionConfig): void {
         onDemand: config.onDemand,
         shortlistSize: clampShortlistSize(config.shortlistSize),
         minSkillsToRoute: clampMinSkillsToRoute(config.minSkillsToRoute),
+        shadow: config.shadow,
+        log: config.log,
       },
       null,
       2,

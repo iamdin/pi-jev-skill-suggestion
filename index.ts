@@ -23,9 +23,20 @@ import {
   triggersFromEnv,
   type Triggers,
 } from "./src/config.ts";
-import { skillsInContext } from "./src/history.ts";
-import { none, suggest, type RosterSkill } from "./src/router.ts";
-import { formatAutoSuggestion, skillGuidance, stripAvailableSkills } from "./src/strip.ts";
+import { resolveReadPath, skillsInContext } from "./src/history.ts";
+import {
+  ENTRY_TYPE,
+  formatStats,
+  hashPrompt,
+  newTurnId,
+  recordsFromEntries,
+  summarize,
+  type LogRecord,
+  type SkipWhy,
+  type Trigger,
+} from "./src/log.ts";
+import { none, suggest, type RosterSkill, type Suggestion } from "./src/router.ts";
+import { formatAutoSuggestion, isTrivialPrompt, skillGuidance, stripAvailableSkills } from "./src/strip.ts";
 
 const TRIGGER_OPTIONS: Array<[string, Triggers]> = [
   ["onDemand — model calls skill_suggest when it needs a skill", { onPrompt: false, onDemand: true }],
@@ -77,7 +88,67 @@ export default function (pi: ExtensionAPI) {
   let triggers: Triggers = { onPrompt: false, onDemand: true };
   let shortlistSize = DEFAULT_SHORTLIST_SIZE;
   let minSkillsToRoute = DEFAULT_MIN_SKILLS_TO_ROUTE;
-  let passthrough = false; // off or small roster: Pi's own listing stays, no routing
+  let shadow = false;
+  let logging = true;
+  let passthrough = false; // off, shadow, or small roster: Pi's own listing stays
+  let turn = newTurnId();
+  let inputSource: string | undefined;
+  /** Shadow routes run off the critical path; flushed on shutdown so `pi -p` doesn't drop them. */
+  const pending = new Set<Promise<unknown>>();
+  const track = (p: Promise<unknown>) => {
+    const done = p.catch(() => {}).finally(() => pending.delete(done));
+    pending.add(done);
+  };
+
+  /** Record into the current Pi session (custom entry, not sent to the LLM). */
+  function record(rec: LogRecord) {
+    if (!logging) return;
+    try {
+      pi.appendEntry(ENTRY_TYPE, rec);
+    } catch {
+      // session torn down — drop
+    }
+  }
+
+  function skipWhy(prompt: string): SkipWhy | null {
+    if (parseSkillBlock(prompt)) return "explicit-skill"; // `/skill:name` arrives expanded
+    if (inputSource === "extension") return "extension-input"; // not typed by a human
+    if (isTrivialPrompt(prompt)) return "trivial";
+    return null;
+  }
+
+  async function route(
+    trigger: Trigger,
+    request: string,
+    signal?: AbortSignal,
+  ): Promise<{ result: Suggestion; log: (shown: boolean) => void }> {
+    const t0 = performance.now();
+    const at = turn; // shadow may finish after the next prompt starts
+    const write = (result: Suggestion, shown: boolean, error?: string) =>
+      record({
+        t: "suggest",
+        turn: at,
+        trigger,
+        prompt: hashPrompt(request),
+        promptChars: request.length,
+        roster: roster.length,
+        skill: result.skill,
+        reason: result.reason,
+        gate: result.gate,
+        fits: result.fits,
+        ms: Math.round(performance.now() - t0),
+        shown,
+        ...(error ? { error } : {}),
+      });
+    try {
+      const result = await suggest(client, request, roster, { signal, shortlistSize });
+      return { result, log: (shown) => write(result, shown) };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      write(none("error"), false, message);
+      throw err;
+    }
+  }
 
   function syncTools() {
     const tools = pi.getActiveTools().filter((name) => name !== "skill_suggest");
@@ -91,7 +162,7 @@ export default function (pi: ExtensionAPI) {
   }
 
   function persist(next: Triggers) {
-    saveConfig({ ...next, shortlistSize, minSkillsToRoute });
+    saveConfig({ ...next, shortlistSize, minSkillsToRoute, shadow, log: logging });
   }
 
   pi.on("session_start", async (_event, ctx) => {
@@ -99,9 +170,12 @@ export default function (pi: ExtensionAPI) {
     if (loaded) {
       shortlistSize = loaded.config.shortlistSize;
       minSkillsToRoute = loaded.config.minSkillsToRoute;
+      shadow = loaded.config.shadow;
+      logging = loaded.config.log;
       applyTriggers(loaded.config);
       const where = loaded.source === "env" ? `${ON_PROMPT_ENV} / ${ON_DEMAND_ENV}` : loaded.source;
-      ctx.ui.notify(`jev skill suggestion: ${describeTriggers(loaded.config)} (${where})`, "info");
+      const what = shadow ? "shadow (log only, Pi listing kept)" : describeTriggers(loaded.config);
+      ctx.ui.notify(`jev skill suggestion: ${what} (${where})`, "info");
       return;
     }
     const picked = await chooseTriggers((title, options) => ctx.ui.select(title, options));
@@ -134,29 +208,66 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("jev-skill-stats", {
+    description: "Skill-suggestion stats for this session (calls, use rate, latency, shadow agreement)",
+    async handler(_args, ctx) {
+      ctx.ui.notify(formatStats(summarize(recordsFromEntries(ctx.sessionManager.getEntries()))), "info");
+    },
+  });
+
+  pi.on("session_shutdown", async () => {
+    await Promise.allSettled([...pending]);
+  });
+
+  pi.on("input", async (event) => {
+    inputSource = event.source;
+  });
+
+  // Every successful read of a roster skill: "was the suggestion used?" / native pick in shadow.
+  pi.on("tool_result", async (event, ctx) => {
+    if (!logging || event.toolName !== "read" || event.isError) return;
+    const raw = event.input.path;
+    if (typeof raw !== "string") return;
+    const location = resolveReadPath(raw, ctx.cwd);
+    const skill = roster.find((s) => s.filePath === location);
+    if (skill) record({ t: "read", turn, skill: skill.name });
+  });
+
   pi.on("before_agent_start", async (event, ctx) => {
     roster = toRoster(event.systemPromptOptions.skills);
+    turn = newTurnId();
     const off = !triggers.onPrompt && !triggers.onDemand;
-    const next = off || roster.length < minSkillsToRoute; // small roster: listing is cheap enough
+    const next = shadow || off || roster.length < minSkillsToRoute; // small roster: listing is cheap enough
     if (next !== passthrough) {
       passthrough = next;
       syncTools();
+    }
+
+    if (shadow) {
+      // Pi keeps its listing; Jev runs off the critical path and is only logged.
+      const why = skipWhy(event.prompt);
+      if (why) record({ t: "skip", turn, trigger: "shadow", why });
+      else if (roster.length) track(route("shadow", event.prompt).then((r) => r.log(false)));
+      return;
     }
     if (passthrough) return;
 
     const stripped = stripAvailableSkills(event.systemPrompt);
     const systemPrompt = `${stripped}\n\n${skillGuidance(triggers)}`;
+    if (!triggers.onPrompt) return { systemPrompt };
 
-    // `/skill:name` arrives expanded — the user already picked; don't route.
-    if (!triggers.onPrompt || parseSkillBlock(event.prompt)) {
+    const why = skipWhy(event.prompt);
+    if (why) {
+      record({ t: "skip", turn, trigger: "onPrompt", why });
       return { systemPrompt };
     }
 
     try {
-      const result = await suggest(client, event.prompt, roster, { shortlistSize });
+      const { result, log } = await route("onPrompt", event.prompt);
       const loaded = skillsInContext(ctx.sessionManager.buildContextEntries(), ctx.cwd);
-      if (result.location && loaded.has(result.location)) return { systemPrompt };
-      const content = formatAutoSuggestion(result);
+      const content =
+        result.location && loaded.has(result.location) ? null : formatAutoSuggestion(result);
+      log(!!content);
       if (!content) return { systemPrompt };
       return {
         systemPrompt,
@@ -188,7 +299,8 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       try {
-        const result = await suggest(client, params.task, roster, { signal, shortlistSize });
+        const { result, log } = await route("onDemand", params.task, signal);
+        log(!!result.skill);
         const loaded = skillsInContext(ctx.sessionManager.buildContextEntries(), ctx.cwd);
         return {
           content: [

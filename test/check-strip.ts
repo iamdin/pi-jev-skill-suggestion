@@ -85,6 +85,8 @@ try {
   assert.equal(fromProject?.config.onDemand, true);
   assert.equal(fromProject?.config.shortlistSize, 9);
   assert.equal(fromProject?.config.minSkillsToRoute, 0);
+  assert.equal(fromProject?.config.shadow, false); // default
+  assert.equal(fromProject?.config.log, true); // default
 
   process.env.JEV_SKILL_ON_DEMAND = "0";
   const fromEnv = loadConfig(projectRoot);
@@ -93,6 +95,10 @@ try {
   assert.equal(fromEnv?.config.onDemand, false);
   assert.equal(fromEnv?.config.shortlistSize, 9);
   delete process.env.JEV_SKILL_ON_DEMAND;
+
+  writeProject({ onDemand: true, shadow: true, log: false });
+  assert.equal(loadConfig(projectRoot)?.config.shadow, true);
+  assert.equal(loadConfig(projectRoot)?.config.log, false);
 
   // 0.1.x configs still load.
   writeProject({ mode: "auto" });

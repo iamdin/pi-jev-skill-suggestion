@@ -75,9 +75,10 @@ You chat normally. After each user prompt, the extension runs Jev itself:
   The agent is told to read that file.
 - **No fit / gate says quiet / API error** → nothing injected; the turn continues.
 - **`/skill:name` prompt** → no Jev call; you already picked.
+- **Ack / go-ahead** (`ok`, `thanks`, `继续`, `lgtm`, …) or **input sent by another extension** → no Jev call.
 - **Winner already in context** (read earlier and not compacted away) → nothing injected.
 
-> **Cost / latency:** every user prompt triggers at least one Jev call before the agent starts — including quiet turns like `what is 2+2?`. Exceptions: `/skill:name` prompts, and rosters below `minSkillsToRoute`. Use only `onDemand` if you only want routing when the model decides a skill might help.
+> **Cost / latency:** every user prompt triggers at least one Jev call before the agent starts — including quiet turns like `what is 2+2?`. Exceptions: the skips above, and rosters below `minSkillsToRoute`. Use only `onDemand` if you only want routing when the model decides a skill might help.
 
 With only `onPrompt`, `skill_suggest` is deactivated.
 
@@ -86,6 +87,23 @@ With only `onPrompt`, `skill_suggest` is deactivated.
 Each user prompt is routed as in `onPrompt`, and `skill_suggest` stays active for **sub-tasks** that come up mid-turn (e.g. the deck is done, now it needs a review). The agent is told not to re-route the user's own request. Same per-prompt cost as `onPrompt`, plus any tool calls the model makes.
 
 Both off = extension off: Pi keeps its listing.
+
+### Shadow (evaluate before switching)
+
+`"shadow": true` keeps Pi's native skill listing untouched and routes every prompt with Jev **in the background** — nothing is stripped or injected, no added latency. Only the session records what Jev would have picked next to what the model actually read. Run it for a while, then check `/jev-skill-stats`.
+
+### Stats
+
+Every decision is recorded **inside the Pi session** as a `custom` entry (`customType: "jev-skill-suggestion"`, never sent to the model), right next to the conversation it came from — open the session file to see why a turn got (or didn't get) a skill.
+
+`/jev-skill-stats` summarizes this session's records:
+
+- per trigger: calls, suggestions shown, **used** (the suggested `SKILL.md` was read in the same turn), errors, p50/p95 latency
+- skipped prompts (no Jev call) by reason
+- shadow: agreement between Jev and the model's own pick
+- least-used skills (suggested ≥ 3 times) — candidates for better descriptions or removal
+
+Across sessions (offline, from a clone): `bun scripts/stats.ts [sessions-dir]` — defaults to every session under `~/.pi/agent/sessions`; pass one project's folder to narrow it.
 
 ### What to try
 
@@ -158,16 +176,18 @@ Priority:
 4. first-session picker → writes global
 
 ```json
-{ "onPrompt": false, "onDemand": true, "shortlistSize": 3, "minSkillsToRoute": 20 }
+{ "onPrompt": false, "onDemand": true, "shortlistSize": 3, "minSkillsToRoute": 20, "shadow": false, "log": true }
 ```
 
-`shortlistSize` = how many stage-1 candidates enter stage-2 (clamped `1..32`). `minSkillsToRoute` = strip and route only at this many skills or more (`0` = always). `/jev-skill-suggestion` updates the global triggers and keeps the other values. Old `{ "mode": "tool" | "auto" }` files still load as `onDemand` / `onPrompt`.
+`shortlistSize` = how many stage-1 candidates enter stage-2 (clamped `1..32`). `minSkillsToRoute` = strip and route only at this many skills or more (`0` = always). `/jev-skill-suggestion` updates the global triggers and keeps the other values. `shadow` = log-only evaluation (see above). `log` = record decisions into the session (default `true`). Old `{ "mode": "tool" | "auto" }` files still load as `onDemand` / `onPrompt`.
 
 ## Privacy
 
 **Sent to TypeSafe:** current task / user prompt; skill names + descriptions; short `SKILL.md` excerpt for shortlisted candidates.
 
 **Not sent:** chat history, workspace files, credentials, tool results, system prompt.
+
+**Session records** (stay in your local session files, never uploaded or sent to the model): a 16-hex **hash** + length of the prompt (not its text — the prompt is already in the session anyway), roster size, picked skill, scores, latency, and which roster skills were read. Turn off with `"log": false`.
 
 ## Develop
 
@@ -182,9 +202,12 @@ src/config.ts          triggers + shortlistSize + minSkillsToRoute
 src/strip.ts           listing strip + guidance + onPrompt message
 src/router.ts          two-stage Jev suggest()
 src/history.ts         skills still in context (compaction-aware)
+src/log.ts             session decision records + /jev-skill-stats
+scripts/stats.ts       cross-session stats (offline)
 test/check-strip.ts
 test/check-router.ts
 test/check-history.ts
+test/check-log.ts
 ```
 
 ## See also
