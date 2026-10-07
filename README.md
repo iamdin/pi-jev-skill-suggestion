@@ -77,7 +77,7 @@ You chat normally. After each user prompt, the extension runs Jev itself:
 - **`/skill:name` prompt** → no Jev call; you already picked.
 - **Winner already in context** (read earlier and not compacted away) → nothing injected.
 
-> **Cost / latency:** every user prompt triggers at least one Jev call before the agent starts — including quiet turns like `what is 2+2?`. Use only `onDemand` if you only want routing when the model decides a skill might help.
+> **Cost / latency:** every user prompt triggers at least one Jev call before the agent starts — including quiet turns like `what is 2+2?`. Exceptions: `/skill:name` prompts, and rosters below `minSkillsToRoute`. Use only `onDemand` if you only want routing when the model decides a skill might help.
 
 With only `onPrompt`, `skill_suggest` is deactivated.
 

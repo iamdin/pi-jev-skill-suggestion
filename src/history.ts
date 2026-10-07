@@ -3,13 +3,14 @@ import path from "node:path";
 import { parseSkillBlock, type SessionEntry } from "@earendil-works/pi-coding-agent";
 
 /**
- * Skill files still visible to the model: `read` tool calls and `/skill:` expansions
+ * Skill files still visible to the model: successful `read` tool calls and `/skill:` expansions
  * in the active context. Pass `sessionManager.buildContextEntries()` — it is
  * compaction- and branch-aware, so a skill read before `/compact` (and summarized
  * away) or on another branch no longer counts.
  */
 export function skillsInContext(entries: SessionEntry[], cwd: string): Set<string> {
   const seen = new Set<string>();
+  const pending = new Map<string, string>(); // read toolCallId → resolved path
   for (const entry of entries) {
     if (entry.type !== "message") continue;
     const msg = entry.message;
@@ -18,8 +19,11 @@ export function skillsInContext(entries: SessionEntry[], cwd: string): Set<strin
         if (part.type !== "toolCall" || part.name !== "read") continue;
         const raw = part.arguments?.path;
         if (typeof raw !== "string") continue;
-        seen.add(path.resolve(cwd, raw.replace(/^~(?=\/|$)/, os.homedir())));
+        pending.set(part.id, path.resolve(cwd, raw.replace(/^~(?=\/|$)/, os.homedir())));
       }
+    } else if (msg.role === "toolResult") {
+      const p = pending.get(msg.toolCallId);
+      if (p && !msg.isError) seen.add(p);
     } else if (msg.role === "user") {
       const text =
         typeof msg.content === "string"
