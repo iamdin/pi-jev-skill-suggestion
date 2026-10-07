@@ -8,6 +8,11 @@ import { parseSkillBlock, type SessionEntry } from "@earendil-works/pi-coding-ag
  * compaction- and branch-aware, so a skill read before `/compact` (and summarized
  * away) or on another branch no longer counts.
  */
+/** Resolve a `read` tool path the way Pi does for the common cases (~, relative). */
+export function resolveReadPath(raw: string, cwd: string): string {
+  return path.resolve(cwd, raw.replace(/^~(?=\/|$)/, os.homedir()));
+}
+
 export function skillsInContext(entries: SessionEntry[], cwd: string): Set<string> {
   const seen = new Set<string>();
   const pending = new Map<string, string>(); // read toolCallId → resolved path
@@ -19,7 +24,7 @@ export function skillsInContext(entries: SessionEntry[], cwd: string): Set<strin
         if (part.type !== "toolCall" || part.name !== "read") continue;
         const raw = part.arguments?.path;
         if (typeof raw !== "string") continue;
-        pending.set(part.id, path.resolve(cwd, raw.replace(/^~(?=\/|$)/, os.homedir())));
+        pending.set(part.id, resolveReadPath(raw, cwd));
       }
     } else if (msg.role === "toolResult") {
       const p = pending.get(msg.toolCallId);
