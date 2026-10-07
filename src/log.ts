@@ -178,7 +178,7 @@ export function summarize(records: LogRecord[]): Stats {
 
 export function formatStats(s: Stats): string {
   const rate = (a: number, b: number) => (b ? `${Math.round((a / b) * 100)}%` : "–");
-  const lines = ["jev skill suggestion — local stats", ""];
+  const lines = ["jev skill suggestion — stats", ""];
   for (const t of ["onPrompt", "onDemand"] as const) {
     const x = s.byTrigger[t];
     if (!x.calls) continue;
@@ -191,7 +191,7 @@ export function formatStats(s: Stats): string {
   if (s.byTrigger.shadow.calls) {
     lines.push(
       `shadow: ${sh.turns} turns, agree ${sh.agree} (${rate(sh.agree, sh.turns)}), Jev-only ${sh.jevOnly}, ` +
-        `native-only ${sh.nativeOnly}, differ ${sh.differ}; p50 ${s.byTrigger.shadow.p50ms}ms`,
+        `native-only ${sh.nativeOnly}, differ ${sh.differ}; ${s.byTrigger.shadow.errors} errors, p50 ${s.byTrigger.shadow.p50ms}ms`,
     );
   }
   const skips = Object.entries(s.skips).map(([k, v]) => `${k} ${v}`);

@@ -96,12 +96,14 @@ Both off = extension off: Pi keeps its listing.
 
 Every decision is recorded **inside the Pi session** as a `custom` entry (`customType: "jev-skill-suggestion"`, never sent to the model), right next to the conversation it came from — open the session file to see why a turn got (or didn't get) a skill.
 
-`/jev-skill-stats` summarizes those records — `/jev-skill-stats` for this session, `/jev-skill-stats project` for every session in this directory, `/jev-skill-stats all` for every session:
+`/jev-skill-stats` summarizes this session's records:
 
 - per trigger: calls, suggestions shown, **used** (the suggested `SKILL.md` was read in the same turn), errors, p50/p95 latency
 - skipped prompts (no Jev call) by reason
 - shadow: agreement between Jev and the model's own pick
 - least-used skills (suggested ≥ 3 times) — candidates for better descriptions or removal
+
+Across sessions (offline, from a clone): `bun scripts/stats.ts [sessions-dir]` — defaults to every session under `~/.pi/agent/sessions`; pass one project's folder to narrow it.
 
 ### What to try
 
@@ -201,6 +203,7 @@ src/strip.ts           listing strip + guidance + onPrompt message
 src/router.ts          two-stage Jev suggest()
 src/history.ts         skills still in context (compaction-aware)
 src/log.ts             session decision records + /jev-skill-stats
+scripts/stats.ts       cross-session stats (offline)
 test/check-strip.ts
 test/check-router.ts
 test/check-history.ts

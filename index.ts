@@ -8,7 +8,6 @@
  * - onDemand: model calls skill_suggest
  */
 
-import path from "node:path";
 import { parseSkillBlock, type ExtensionAPI, type Skill } from "@earendil-works/pi-coding-agent";
 import { TypeSafeClient } from "@typesafe-ai/sdk";
 import { Type } from "typebox";
@@ -31,7 +30,6 @@ import {
   hashPrompt,
   newTurnId,
   recordsFromEntries,
-  recordsFromSessionDir,
   summarize,
   type LogRecord,
   type SkipWhy,
@@ -211,27 +209,9 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("jev-skill-stats", {
-    description: "Skill-suggestion stats from session records: (empty) this session · project · all",
-    getArgumentCompletions: (prefix) =>
-      ["project", "all"].filter((v) => v.startsWith(prefix)).map((v) => ({ value: v, label: v })),
-    async handler(args, ctx) {
-      const scope = args.trim() || "session";
-      let records: LogRecord[];
-      let where: string;
-      if (scope === "session") {
-        records = recordsFromEntries(ctx.sessionManager.getEntries());
-        where = "this session";
-      } else if (scope === "project" || scope === "all") {
-        const projectDir = ctx.sessionManager.getSessionDir();
-        const dir = scope === "all" ? path.dirname(projectDir) : projectDir; // sessions root / this cwd
-        const found = await recordsFromSessionDir(dir);
-        records = found.records;
-        where = `${found.sessions} sessions in ${dir}`;
-      } else {
-        ctx.ui.notify("usage: /jev-skill-stats [project|all]", "warning");
-        return;
-      }
-      ctx.ui.notify(`${formatStats(summarize(records))}\n\n(${where})`, "info");
+    description: "Skill-suggestion stats for this session (calls, use rate, latency, shadow agreement)",
+    async handler(_args, ctx) {
+      ctx.ui.notify(formatStats(summarize(recordsFromEntries(ctx.sessionManager.getEntries()))), "info");
     },
   });
 
