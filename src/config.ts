@@ -9,14 +9,14 @@ export type ExtensionConfig = {
   /** Max stage-1 candidates sent to stage-2 rerank. */
   shortlistSize: number;
   /** Below this many skills, leave Pi's listing alone and skip Jev. 0 = always route. */
-  minRoster: number;
+  minSkillsToRoute: number;
 };
 
 const FILENAME = "jev-skill-suggestion.json";
 export const MODE_ENV = "JEV_SKILL_MODE";
 export const DEFAULT_SHORTLIST_SIZE = 3;
 export const MAX_SHORTLIST_SIZE = 32;
-export const DEFAULT_MIN_ROSTER = 20;
+export const DEFAULT_MIN_SKILLS_TO_ROUTE = 20;
 
 export function globalConfigPath(): string {
   return join(getAgentDir(), FILENAME);
@@ -35,8 +35,8 @@ export function clampShortlistSize(value: unknown): number {
   return Math.min(MAX_SHORTLIST_SIZE, Math.max(1, Math.trunc(value)));
 }
 
-export function clampMinRoster(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_MIN_ROSTER;
+export function clampMinSkillsToRoute(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return DEFAULT_MIN_SKILLS_TO_ROUTE;
   return Math.max(0, Math.trunc(value));
 }
 
@@ -51,13 +51,13 @@ function readConfigFile(path: string): ExtensionConfig | null {
     const raw = JSON.parse(readFileSync(path, "utf8")) as {
       mode?: unknown;
       shortlistSize?: unknown;
-      minRoster?: unknown;
+      minSkillsToRoute?: unknown;
     };
     if (!isSuggestMode(raw.mode)) return null;
     return {
       mode: raw.mode,
       shortlistSize: clampShortlistSize(raw.shortlistSize),
-      minRoster: clampMinRoster(raw.minRoster),
+      minSkillsToRoute: clampMinSkillsToRoute(raw.minSkillsToRoute),
     };
   } catch {
     return null;
@@ -76,7 +76,7 @@ function readFileConfig(cwd?: string): { config: ExtensionConfig; source: "proje
 
 /**
  * Resolve config: env `JEV_SKILL_MODE` overrides mode only;
- * `shortlistSize` / `minRoster` still come from project/global JSON (else default).
+ * `shortlistSize` / `minSkillsToRoute` still come from project/global JSON (else default).
  */
 export function loadConfig(cwd?: string): { config: ExtensionConfig; source: "env" | "project" | "global" } | null {
   const file = readFileConfig(cwd);
@@ -86,7 +86,7 @@ export function loadConfig(cwd?: string): { config: ExtensionConfig; source: "en
       config: {
         mode: fromEnv,
         shortlistSize: file?.config.shortlistSize ?? DEFAULT_SHORTLIST_SIZE,
-        minRoster: file?.config.minRoster ?? DEFAULT_MIN_ROSTER,
+        minSkillsToRoute: file?.config.minSkillsToRoute ?? DEFAULT_MIN_SKILLS_TO_ROUTE,
       },
       source: "env",
     };
@@ -104,7 +104,7 @@ export function saveConfig(config: ExtensionConfig): void {
       {
         mode: config.mode,
         shortlistSize: clampShortlistSize(config.shortlistSize),
-        minRoster: clampMinRoster(config.minRoster),
+        minSkillsToRoute: clampMinSkillsToRoute(config.minSkillsToRoute),
       },
       null,
       2,

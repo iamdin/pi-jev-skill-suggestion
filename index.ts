@@ -8,18 +8,11 @@
  * - auto: extension suggests after each user prompt
  */
 
-import os from "node:os";
-import path from "node:path";
-import {
-  isToolCallEventType,
-  parseSkillBlock,
-  type ExtensionAPI,
-  type Skill,
-} from "@earendil-works/pi-coding-agent";
+import { parseSkillBlock, type ExtensionAPI, type Skill } from "@earendil-works/pi-coding-agent";
 import { TypeSafeClient } from "@typesafe-ai/sdk";
 import { Type } from "typebox";
 import {
-  DEFAULT_MIN_ROSTER,
+  DEFAULT_MIN_SKILLS_TO_ROUTE,
   DEFAULT_SHORTLIST_SIZE,
   globalConfigPath,
   isSuggestMode,
@@ -28,6 +21,7 @@ import {
   saveConfig,
   type SuggestMode,
 } from "./src/config.ts";
+import { skillsInContext } from "./src/history.ts";
 import { none, suggest, type RosterSkill } from "./src/router.ts";
 import { formatAutoSuggestion, skillGuidance, stripAvailableSkills } from "./src/strip.ts";
 
@@ -58,7 +52,7 @@ function formatToolResult(result: Awaited<ReturnType<typeof suggest>>, alreadyRe
       location: result.location,
       reason: result.reason,
       next: alreadyRead
-        ? `Already read earlier in this session; follow it (re-read ${result.location} only if it is no longer in context).`
+        ? `Already read and still in context; follow it.`
         : `Read ${result.location} and follow it.`,
     },
     null,
@@ -81,10 +75,8 @@ export default function (pi: ExtensionAPI) {
   let roster: RosterSkill[] = [];
   let mode: SuggestMode = "tool";
   let shortlistSize = DEFAULT_SHORTLIST_SIZE;
-  let minRoster = DEFAULT_MIN_ROSTER;
+  let minSkillsToRoute = DEFAULT_MIN_SKILLS_TO_ROUTE;
   let passthrough = false; // small roster: Pi's own listing stays, no routing
-  /** SKILL.md paths already read (or /skill:-expanded) this session. */
-  const readSkills = new Set<string>();
 
   function syncTools() {
     const tools = pi.getActiveTools().filter((name) => name !== "skill_suggest");
@@ -98,15 +90,14 @@ export default function (pi: ExtensionAPI) {
   }
 
   function persist(next: SuggestMode) {
-    saveConfig({ mode: next, shortlistSize, minRoster });
+    saveConfig({ mode: next, shortlistSize, minSkillsToRoute });
   }
 
   pi.on("session_start", async (_event, ctx) => {
-    readSkills.clear();
     const loaded = loadConfig(ctx.cwd);
     if (loaded) {
       shortlistSize = loaded.config.shortlistSize;
-      minRoster = loaded.config.minRoster;
+      minSkillsToRoute = loaded.config.minSkillsToRoute;
       applyModeTools(loaded.config.mode);
       const where = loaded.source === "env" ? "JEV_SKILL_MODE" : loaded.source;
       ctx.ui.notify(`jev skill suggestion: ${loaded.config.mode} mode (${where})`, "info");
@@ -145,15 +136,9 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  pi.on("tool_call", async (event, ctx) => {
-    if (!isToolCallEventType("read", event)) return;
-    const raw = event.input.path.replace(/^~(?=\/|$)/, os.homedir());
-    readSkills.add(path.resolve(ctx.cwd, raw));
-  });
-
-  pi.on("before_agent_start", async (event) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     roster = toRoster(event.systemPromptOptions.skills);
-    const small = roster.length < minRoster;
+    const small = roster.length < minSkillsToRoute;
     if (small !== passthrough) {
       passthrough = small;
       syncTools();
@@ -164,16 +149,14 @@ export default function (pi: ExtensionAPI) {
     const systemPrompt = `${stripped}\n\n${skillGuidance(mode)}`;
 
     // `/skill:name` arrives expanded — the user already picked; don't route.
-    const explicit = parseSkillBlock(event.prompt);
-    if (explicit) readSkills.add(explicit.location);
-
-    if (mode !== "auto" || explicit) {
+    if (mode !== "auto" || parseSkillBlock(event.prompt)) {
       return { systemPrompt };
     }
 
     try {
       const result = await suggest(client, event.prompt, roster, { shortlistSize });
-      if (result.location && readSkills.has(result.location)) return { systemPrompt };
+      const loaded = skillsInContext(ctx.sessionManager.buildContextEntries(), ctx.cwd);
+      if (result.location && loaded.has(result.location)) return { systemPrompt };
       const content = formatAutoSuggestion(result);
       if (!content) return { systemPrompt };
       return {
@@ -204,14 +187,15 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({
       task: Type.String({ description: "The user task or request to route against installed skills" }),
     }),
-    async execute(_toolCallId, params, signal) {
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       try {
         const result = await suggest(client, params.task, roster, { signal, shortlistSize });
+        const loaded = skillsInContext(ctx.sessionManager.buildContextEntries(), ctx.cwd);
         return {
           content: [
             {
               type: "text",
-              text: formatToolResult(result, !!result.location && readSkills.has(result.location)),
+              text: formatToolResult(result, !!result.location && loaded.has(result.location)),
             },
           ],
           details: { ok: true, ...result },

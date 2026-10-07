@@ -53,7 +53,7 @@ skill_suggest({ task: "<what the user asked>" })
 | `{ "skill": "foo", "location": ".../SKILL.md", ... }` | `read` that file and follow it |
 | `{ "skill": null, "reason": "..." }` | continue without a skill |
 
-If the suggested skill was already read this session, `next` says so instead of asking for a re-read.
+If the suggested skill is already in context (read earlier and not compacted away), `next` says so instead of asking for a re-read.
 
 You do not call the tool yourself. Switch mode anytime with `/jev-skill-mode`.
 
@@ -66,7 +66,7 @@ You chat normally. After each user prompt, the extension runs Jev itself:
   The agent is told to read that file.
 - **No fit / gate says quiet / API error** → nothing injected; the turn continues.
 - **`/skill:name` prompt** → no Jev call; you already picked.
-- **Winner already read this session** → nothing injected.
+- **Winner already in context** (read earlier and not compacted away) → nothing injected.
 
 > **Cost / latency:** every user prompt triggers at least one Jev call before the agent starts — including quiet turns like `what is 2+2?`. Prefer `tool` if you only want routing when the model decides a skill might help.
 
@@ -120,7 +120,7 @@ user user prompt
 
 Roster = installed skills that are not `disableModelInvocation`. Built each turn from Pi's skill list.
 
-**Small roster → passthrough.** Below `minRoster` skills (default **20**), the listing is cheap enough: nothing is stripped, Jev is never called, and `skill_suggest` is deactivated.
+**Small roster → passthrough.** Below `minSkillsToRoute` skills (default **20**), the listing is cheap enough: nothing is stripped, Jev is never called, and `skill_suggest` is deactivated.
 
 ### Inside `suggest()`
 
@@ -143,10 +143,10 @@ Priority:
 4. first-session picker → writes global
 
 ```json
-{ "mode": "tool", "shortlistSize": 3, "minRoster": 20 }
+{ "mode": "tool", "shortlistSize": 3, "minSkillsToRoute": 20 }
 ```
 
-`shortlistSize` = how many stage-1 candidates enter stage-2 (clamped `1..32`). `minRoster` = strip and route only at this many skills or more (`0` = always). `/jev-skill-mode` updates global `mode` and keeps the other values.
+`shortlistSize` = how many stage-1 candidates enter stage-2 (clamped `1..32`). `minSkillsToRoute` = strip and route only at this many skills or more (`0` = always). `/jev-skill-mode` updates global `mode` and keeps the other values.
 
 ## Privacy
 
@@ -166,8 +166,10 @@ index.ts               extension entry (strip, modes, tool)
 src/config.ts          mode + shortlistSize
 src/strip.ts           listing strip + guidance + auto message
 src/router.ts          two-stage Jev suggest()
+src/history.ts         skills still in context (compaction-aware)
 test/check-strip.ts
 test/check-router.ts
+test/check-history.ts
 ```
 
 ## See also
