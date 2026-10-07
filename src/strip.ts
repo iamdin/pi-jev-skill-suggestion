@@ -1,4 +1,4 @@
-import type { SuggestMode } from "./config.ts";
+import type { Triggers } from "./config.ts";
 
 /** Remove Pi's inlined `<available_skills>` block from a system prompt. */
 export function stripAvailableSkills(prompt: string): string {
@@ -11,13 +11,13 @@ export function stripAvailableSkills(prompt: string): string {
     .trimEnd();
 }
 
-const TOOL_GUIDANCE = `
+const ON_DEMAND_GUIDANCE = `
 ## Skills
 
 Skills are not listed in this prompt. When a task may need a specialized skill workflow, call the \`skill_suggest\` tool with the task. If it returns a skill, read that skill's file and follow it. If it returns none, continue without a skill.
 `.trim();
 
-const AUTO_GUIDANCE = `
+const ON_PROMPT_GUIDANCE = `
 ## Skills
 
 Skills are not listed in this prompt. When a specialized skill fits the latest user request, a skill recommendation message is injected for this turn. If one is present, read that skill's file and follow it. If none is present, continue without a skill.
@@ -29,8 +29,9 @@ const BOTH_GUIDANCE = `
 Skills are not listed in this prompt. When a specialized skill fits the latest user request, a skill recommendation message is injected for this turn. If one is present, read that skill's file and follow it. Call the \`skill_suggest\` tool only when a new sub-task comes up that differs from the user's request and may need a specialized skill workflow.
 `.trim();
 
-export function skillGuidance(mode: SuggestMode): string {
-  return { tool: TOOL_GUIDANCE, auto: AUTO_GUIDANCE, both: BOTH_GUIDANCE }[mode];
+export function skillGuidance(t: Triggers): string {
+  if (t.onPrompt && t.onDemand) return BOTH_GUIDANCE;
+  return t.onPrompt ? ON_PROMPT_GUIDANCE : ON_DEMAND_GUIDANCE;
 }
 
 export function formatAutoSuggestion(result: {

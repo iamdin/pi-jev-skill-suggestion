@@ -7,8 +7,9 @@ import {
   clampShortlistSize,
   DEFAULT_MIN_SKILLS_TO_ROUTE,
   DEFAULT_SHORTLIST_SIZE,
+  describeTriggers,
   loadConfig,
-  modeFromEnv,
+  triggersFromEnv,
 } from "../src/config.ts";
 import { formatAutoSuggestion, skillGuidance, stripAvailableSkills } from "../src/strip.ts";
 
@@ -37,11 +38,16 @@ assert.equal(stripped.includes("brave-search"), false);
 assert.equal(stripped.includes("Available tools:"), true);
 assert.equal(stripped.includes("Current working directory: /tmp"), true);
 
-assert.match(skillGuidance("tool"), /skill_suggest/);
-assert.doesNotMatch(skillGuidance("auto"), /skill_suggest/);
-assert.match(skillGuidance("auto"), /recommendation message/);
-assert.match(skillGuidance("both"), /recommendation message/);
-assert.match(skillGuidance("both"), /skill_suggest/);
+const onDemand = { onPrompt: false, onDemand: true };
+const onPrompt = { onPrompt: true, onDemand: false };
+const both = { onPrompt: true, onDemand: true };
+assert.match(skillGuidance(onDemand), /skill_suggest/);
+assert.doesNotMatch(skillGuidance(onPrompt), /skill_suggest/);
+assert.match(skillGuidance(onPrompt), /recommendation message/);
+assert.match(skillGuidance(both), /recommendation message/);
+assert.match(skillGuidance(both), /skill_suggest/);
+assert.equal(describeTriggers(both), "onPrompt + onDemand");
+assert.equal(describeTriggers({ onPrompt: false, onDemand: false }), "off");
 
 assert.equal(
   formatAutoSuggestion({ skill: null, location: null, reason: "quiet" }),
@@ -56,34 +62,49 @@ assert.match(
   /pptx/,
 );
 
-assert.equal(modeFromEnv({ JEV_SKILL_MODE: "auto" }), "auto");
-assert.equal(modeFromEnv({ JEV_SKILL_MODE: "TOOL" }), "tool");
-assert.equal(modeFromEnv({ JEV_SKILL_MODE: "both" }), "both");
-assert.equal(modeFromEnv({ JEV_SKILL_MODE: "nope" }), null);
-assert.equal(modeFromEnv({}), null);
+assert.deepEqual(triggersFromEnv({ JEV_SKILL_ON_PROMPT: "1", JEV_SKILL_ON_DEMAND: "FALSE" }), {
+  onPrompt: true,
+  onDemand: false,
+});
+assert.deepEqual(triggersFromEnv({ JEV_SKILL_ON_PROMPT: "nope" }), {});
+assert.deepEqual(triggersFromEnv({}), {});
 
-const prevMode = process.env.JEV_SKILL_MODE;
+const ENV_KEYS = ["JEV_SKILL_ON_PROMPT", "JEV_SKILL_ON_DEMAND"] as const;
+const prevEnv = ENV_KEYS.map((k) => process.env[k]);
 const projectRoot = mkdtempSync(join(tmpdir(), "jev-skill-project-"));
+const writeProject = (config: object) =>
+  writeFileSync(join(projectRoot, ".pi", "jev-skill-suggestion.json"), `${JSON.stringify(config)}\n`);
 try {
   mkdirSync(join(projectRoot, ".pi"), { recursive: true });
-  writeFileSync(
-    join(projectRoot, ".pi", "jev-skill-suggestion.json"),
-    `${JSON.stringify({ mode: "tool", shortlistSize: 9, minSkillsToRoute: 0 }, null, 2)}\n`,
-  );
+  for (const k of ENV_KEYS) delete process.env[k];
 
-  delete process.env.JEV_SKILL_MODE;
+  writeProject({ onPrompt: true, onDemand: true, shortlistSize: 9, minSkillsToRoute: 0 });
   const fromProject = loadConfig(projectRoot);
   assert.equal(fromProject?.source, "project");
-  assert.equal(fromProject?.config.mode, "tool");
+  assert.equal(fromProject?.config.onPrompt, true);
+  assert.equal(fromProject?.config.onDemand, true);
   assert.equal(fromProject?.config.shortlistSize, 9);
   assert.equal(fromProject?.config.minSkillsToRoute, 0);
 
-  process.env.JEV_SKILL_MODE = "auto";
+  process.env.JEV_SKILL_ON_DEMAND = "0";
   const fromEnv = loadConfig(projectRoot);
   assert.equal(fromEnv?.source, "env");
-  assert.equal(fromEnv?.config.mode, "auto");
-  assert.equal(fromEnv?.config.shortlistSize, 9); // env overrides mode only
-  assert.equal(fromEnv?.config.minSkillsToRoute, 0);
+  assert.equal(fromEnv?.config.onPrompt, true); // untouched by env
+  assert.equal(fromEnv?.config.onDemand, false);
+  assert.equal(fromEnv?.config.shortlistSize, 9);
+  delete process.env.JEV_SKILL_ON_DEMAND;
+
+  // 0.1.x configs still load.
+  writeProject({ mode: "auto" });
+  assert.deepEqual(
+    [loadConfig(projectRoot)?.config.onPrompt, loadConfig(projectRoot)?.config.onDemand],
+    [true, false],
+  );
+  writeProject({ mode: "tool" });
+  assert.deepEqual(
+    [loadConfig(projectRoot)?.config.onPrompt, loadConfig(projectRoot)?.config.onDemand],
+    [false, true],
+  );
 
   assert.equal(clampShortlistSize(undefined), DEFAULT_SHORTLIST_SIZE);
   assert.equal(clampShortlistSize(0), 1);
@@ -93,9 +114,11 @@ try {
   assert.equal(clampMinSkillsToRoute(-5), 0);
   assert.equal(clampMinSkillsToRoute(12.7), 12);
 } finally {
-  if (prevMode === undefined) delete process.env.JEV_SKILL_MODE;
-  else process.env.JEV_SKILL_MODE = prevMode;
+  ENV_KEYS.forEach((k, i) => {
+    if (prevEnv[i] === undefined) delete process.env[k];
+    else process.env[k] = prevEnv[i];
+  });
   rmSync(projectRoot, { recursive: true, force: true });
 }
 
-console.log("strip + mode guidance ok");
+console.log("strip + triggers config ok");

@@ -2,11 +2,15 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 
-/** tool: model calls skill_suggest. auto: suggest after each prompt. both: auto + tool for sub-tasks. */
-export type SuggestMode = "tool" | "auto" | "both";
+/** When Jev routes. Both may be on; both off = extension off. */
+export type Triggers = {
+  /** Suggest a skill on every user prompt (before the agent starts). */
+  onPrompt: boolean;
+  /** Expose `skill_suggest` so the model can ask when it needs a skill. */
+  onDemand: boolean;
+};
 
-export type ExtensionConfig = {
-  mode: SuggestMode;
+export type ExtensionConfig = Triggers & {
   /** Max stage-1 candidates sent to stage-2 rerank. */
   shortlistSize: number;
   /** Below this many skills, leave Pi's listing alone and skip Jev. 0 = always route. */
@@ -14,7 +18,8 @@ export type ExtensionConfig = {
 };
 
 const FILENAME = "jev-skill-suggestion.json";
-export const MODE_ENV = "JEV_SKILL_MODE";
+export const ON_PROMPT_ENV = "JEV_SKILL_ON_PROMPT";
+export const ON_DEMAND_ENV = "JEV_SKILL_ON_DEMAND";
 export const DEFAULT_SHORTLIST_SIZE = 3;
 export const MAX_SHORTLIST_SIZE = 32;
 export const DEFAULT_MIN_SKILLS_TO_ROUTE = 20;
@@ -27,8 +32,9 @@ export function projectConfigPath(cwd: string): string {
   return join(cwd, CONFIG_DIR_NAME, FILENAME);
 }
 
-export function isSuggestMode(value: unknown): value is SuggestMode {
-  return value === "tool" || value === "auto" || value === "both";
+export function describeTriggers(t: Triggers): string {
+  const on = [t.onPrompt && "onPrompt", t.onDemand && "onDemand"].filter(Boolean);
+  return on.length ? on.join(" + ") : "off";
 }
 
 export function clampShortlistSize(value: unknown): number {
@@ -41,22 +47,43 @@ export function clampMinSkillsToRoute(value: unknown): number {
   return Math.max(0, Math.trunc(value));
 }
 
-export function modeFromEnv(env: NodeJS.ProcessEnv = process.env): SuggestMode | null {
-  const raw = env[MODE_ENV]?.trim().toLowerCase();
-  return isSuggestMode(raw) ? raw : null;
+function envFlag(raw: string | undefined): boolean | undefined {
+  const v = raw?.trim().toLowerCase();
+  if (v === "1" || v === "true") return true;
+  if (v === "0" || v === "false") return false;
+  return undefined;
+}
+
+/** Per-trigger env overrides; unset/unknown values are left out. */
+export function triggersFromEnv(env: NodeJS.ProcessEnv = process.env): Partial<Triggers> {
+  const out: Partial<Triggers> = {};
+  const onPrompt = envFlag(env[ON_PROMPT_ENV]);
+  const onDemand = envFlag(env[ON_DEMAND_ENV]);
+  if (onPrompt !== undefined) out.onPrompt = onPrompt;
+  if (onDemand !== undefined) out.onDemand = onDemand;
+  return out;
 }
 
 function readConfigFile(path: string): ExtensionConfig | null {
   if (!existsSync(path)) return null;
   try {
     const raw = JSON.parse(readFileSync(path, "utf8")) as {
-      mode?: unknown;
+      onPrompt?: unknown;
+      onDemand?: unknown;
+      mode?: unknown; // 0.1.x: "tool" | "auto"
       shortlistSize?: unknown;
       minSkillsToRoute?: unknown;
     };
-    if (!isSuggestMode(raw.mode)) return null;
+    let triggers: Triggers;
+    if (typeof raw.onPrompt === "boolean" || typeof raw.onDemand === "boolean") {
+      triggers = { onPrompt: raw.onPrompt === true, onDemand: raw.onDemand === true };
+    } else if (raw.mode === "tool" || raw.mode === "auto") {
+      triggers = { onPrompt: raw.mode === "auto", onDemand: raw.mode === "tool" };
+    } else {
+      return null;
+    }
     return {
-      mode: raw.mode,
+      ...triggers,
       shortlistSize: clampShortlistSize(raw.shortlistSize),
       minSkillsToRoute: clampMinSkillsToRoute(raw.minSkillsToRoute),
     };
@@ -76,23 +103,24 @@ function readFileConfig(cwd?: string): { config: ExtensionConfig; source: "proje
 }
 
 /**
- * Resolve config: env `JEV_SKILL_MODE` overrides mode only;
- * `shortlistSize` / `minSkillsToRoute` still come from project/global JSON (else default).
+ * Resolve config: `JEV_SKILL_ON_PROMPT` / `JEV_SKILL_ON_DEMAND` override their trigger only;
+ * everything else comes from project/global JSON (else default; a trigger with no file is off).
  */
 export function loadConfig(cwd?: string): { config: ExtensionConfig; source: "env" | "project" | "global" } | null {
   const file = readFileConfig(cwd);
-  const fromEnv = modeFromEnv();
-  if (fromEnv) {
-    return {
-      config: {
-        mode: fromEnv,
-        shortlistSize: file?.config.shortlistSize ?? DEFAULT_SHORTLIST_SIZE,
-        minSkillsToRoute: file?.config.minSkillsToRoute ?? DEFAULT_MIN_SKILLS_TO_ROUTE,
-      },
-      source: "env",
-    };
-  }
-  return file;
+  const fromEnv = triggersFromEnv();
+  if (Object.keys(fromEnv).length === 0) return file;
+  return {
+    config: {
+      onPrompt: false,
+      onDemand: false,
+      shortlistSize: DEFAULT_SHORTLIST_SIZE,
+      minSkillsToRoute: DEFAULT_MIN_SKILLS_TO_ROUTE,
+      ...file?.config,
+      ...fromEnv,
+    },
+    source: "env",
+  };
 }
 
 /** Writes global user config (`~/.pi/agent/jev-skill-suggestion.json`). */
@@ -103,7 +131,8 @@ export function saveConfig(config: ExtensionConfig): void {
     path,
     `${JSON.stringify(
       {
-        mode: config.mode,
+        onPrompt: config.onPrompt,
+        onDemand: config.onDemand,
         shortlistSize: clampShortlistSize(config.shortlistSize),
         minSkillsToRoute: clampMinSkillsToRoute(config.minSkillsToRoute),
       },
