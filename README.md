@@ -122,7 +122,7 @@ Same two-stage idea as the [skill suggestion cookbook](https://docs.typesafe.ai/
 
 1. **Gate** — three Noul questions (act on user's system? needs a documented procedure? would prose alone suffice?). Mean oriented score; below **0.30** → no skill.
 2. **Wide rank** — roster chunked (≤254 skills + `none_of_these` per call). Up to **3** concurrent `systemOne` Choice calls.
-3. **Shortlist** — merge chunk rankings by score; always keep the best chunk; drop other chunks whose `none_of_these` ≥ **0.50**; keep top `shortlistSize` (default **3**).
+3. **Shortlist** — when chunked, take each surviving chunk's winner (cross-chunk probs aren't comparable), then fill from the best chunk; drop other chunks whose `none_of_these` ≥ **0.50**; keep top `shortlistSize` (default **3**). Stage-2 compares them for real.
 4. **Narrow** — read ~**700** chars of each shortlisted `SKILL.md`, Choice + per-candidate fits Noul. Winner must beat fits **0.40**; else none.
 
 Timeout / API error → **fail open** (no skill; turn continues).
@@ -160,8 +160,8 @@ index.ts               extension entry (strip, modes, tool)
 src/config.ts          mode + shortlistSize
 src/strip.ts           listing strip + guidance + auto message
 src/router.ts          two-stage Jev suggest()
-scripts/check-strip.ts
-scripts/check-router.ts
+test/check-strip.ts
+test/check-router.ts
 ```
 
 ## See also

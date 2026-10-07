@@ -108,7 +108,9 @@ const failed = none("routing failed open: boom");
 assert.equal(failed.skill, null);
 assert.equal(failed.gate, 0);
 
-// Cross-chunk: weak early chunk must not FIFO-steal slots from a stronger later chunk.
+// Cross-chunk: take each surviving chunk's winner (probs aren't comparable across chunks),
+// then fill from the best chunk — don't let a weak chunk's renormalized 0.2 beat real runners-up wrongly,
+// and don't drop the other chunk's winner just because its absolute score is lower.
 assert.deepEqual(
   pickShortlist(
     [
@@ -126,7 +128,7 @@ assert.deepEqual(
     [0.1, 0.05],
     3,
   ),
-  ["pptx", "pdf", "grep"],
+  ["pptx", "weak-a", "pdf"],
 );
 
 // High nonePressure drops a non-best chunk even if its top score looks ok.
