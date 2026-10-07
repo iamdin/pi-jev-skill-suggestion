@@ -28,6 +28,7 @@ import { formatAutoSuggestion, skillGuidance, stripAvailableSkills } from "./src
 const MODE_OPTIONS = [
   "tool — model calls skill_suggest when needed",
   "auto — suggest a skill after each user prompt",
+  "both — auto, plus skill_suggest for sub-tasks mid-turn",
 ] as const;
 
 function parseModeChoice(choice: string | undefined): SuggestMode | null {
@@ -80,7 +81,7 @@ export default function (pi: ExtensionAPI) {
 
   function syncTools() {
     const tools = pi.getActiveTools().filter((name) => name !== "skill_suggest");
-    if (mode === "tool" && !passthrough) tools.push("skill_suggest");
+    if (mode !== "auto" && !passthrough) tools.push("skill_suggest");
     pi.setActiveTools(tools);
   }
 
@@ -115,7 +116,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("jev-skill-mode", {
-    description: "Choose tool vs auto skill suggestion mode",
+    description: "Choose tool / auto / both skill suggestion mode",
     async handler(_args, ctx) {
       const picked = await chooseMode((title, options) => ctx.ui.select(title, options));
       if (!picked) {
@@ -149,7 +150,7 @@ export default function (pi: ExtensionAPI) {
     const systemPrompt = `${stripped}\n\n${skillGuidance(mode)}`;
 
     // `/skill:name` arrives expanded — the user already picked; don't route.
-    if (mode !== "auto" || parseSkillBlock(event.prompt)) {
+    if (mode === "tool" || parseSkillBlock(event.prompt)) {
       return { systemPrompt };
     }
 

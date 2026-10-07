@@ -40,6 +40,8 @@ assert.equal(stripped.includes("Current working directory: /tmp"), true);
 assert.match(skillGuidance("tool"), /skill_suggest/);
 assert.doesNotMatch(skillGuidance("auto"), /skill_suggest/);
 assert.match(skillGuidance("auto"), /recommendation message/);
+assert.match(skillGuidance("both"), /recommendation message/);
+assert.match(skillGuidance("both"), /skill_suggest/);
 
 assert.equal(
   formatAutoSuggestion({ skill: null, location: null, reason: "quiet" }),
@@ -56,6 +58,7 @@ assert.match(
 
 assert.equal(modeFromEnv({ JEV_SKILL_MODE: "auto" }), "auto");
 assert.equal(modeFromEnv({ JEV_SKILL_MODE: "TOOL" }), "tool");
+assert.equal(modeFromEnv({ JEV_SKILL_MODE: "both" }), "both");
 assert.equal(modeFromEnv({ JEV_SKILL_MODE: "nope" }), null);
 assert.equal(modeFromEnv({}), null);
 

@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
 
-export type SuggestMode = "tool" | "auto";
+/** tool: model calls skill_suggest. auto: suggest after each prompt. both: auto + tool for sub-tasks. */
+export type SuggestMode = "tool" | "auto" | "both";
 
 export type ExtensionConfig = {
   mode: SuggestMode;
@@ -27,7 +28,7 @@ export function projectConfigPath(cwd: string): string {
 }
 
 export function isSuggestMode(value: unknown): value is SuggestMode {
-  return value === "tool" || value === "auto";
+  return value === "tool" || value === "auto" || value === "both";
 }
 
 export function clampShortlistSize(value: unknown): number {

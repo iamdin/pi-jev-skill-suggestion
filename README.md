@@ -34,7 +34,7 @@ pi -e ./index.ts
 export TYPESAFE_API_KEY=ts_...
 ```
 
-3. Start Pi as usual. First session with a key set asks you to pick a mode (`tool` or `auto`).
+3. Start Pi as usual. First session with a key set asks you to pick a mode (`tool`, `auto`, or `both`).
 
 > **No key → extension no-ops.** Pi keeps its normal skill listing; nothing is stripped.
 
@@ -72,6 +72,10 @@ You chat normally. After each user prompt, the extension runs Jev itself:
 
 In `auto`, `skill_suggest` is deactivated so the model does not double-route.
 
+### `both` mode
+
+`auto` + `tool`. The extension suggests for each user prompt as above, and `skill_suggest` stays active for **sub-tasks** that come up mid-turn (e.g. the deck is done, now it needs a review). The agent is told not to re-route the user's own request. Same per-prompt cost as `auto`, plus any tool calls the model makes.
+
 ### What to try
 
 ```text
@@ -101,7 +105,7 @@ user user prompt
            │
      ┌─────┴─────┐
      │           │
-  tool mode   auto mode
+  tool/both   auto/both
      │           │
      ▼           ▼
  agent may    extension calls
@@ -137,7 +141,7 @@ Timeout / API error → **fail open** (no skill; turn continues).
 
 Priority:
 
-1. `JEV_SKILL_MODE=tool|auto` — overrides **mode only**
+1. `JEV_SKILL_MODE=tool|auto|both` — overrides **mode only**
 2. `.pi/jev-skill-suggestion.json`
 3. `~/.pi/agent/jev-skill-suggestion.json`
 4. first-session picker → writes global
